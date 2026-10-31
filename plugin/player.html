@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>英语听力与双语字幕精听播放器</title>
+  <link rel="stylesheet" href="player.css" />
+</head>
+<body>
+  <div class="app-container">
+    <!-- 顶部栏：目录选择与课程切换 -->
+    <header class="top-bar">
+      <div class="top-bar-left">
+        <h1 class="app-title">🎧 英语双语精听播放器</h1>
+        <button id="selectDirBtn" type="button" class="btn btn-primary folder-btn">
+          📁 选择要播放的目录
+        </button>
+        <input id="dirInput" type="file" webkitdirectory directory multiple hidden />
+
+        <div id="lessonSelectWrap" class="lesson-select-wrap hidden">
+          <label for="lessonSelect">当前目录课程：</label>
+          <select id="lessonSelect" class="lesson-select"></select>
+        </div>
+      </div>
+
+      <div class="top-bar-right">
+        <span id="statusBadge" class="status-badge">请选择包含 mp3 和字幕的目录（如 resources）</span>
+        <button id="toggleStampModeBtn" class="btn btn-outline" disabled>
+          ⏱️ 打时间戳 / 微调
+        </button>
+      </div>
+    </header>
+
+    <!-- 打时间戳工具栏（默认折叠，点击“打时间戳 / 微调”展开） -->
+    <section id="stampToolbar" class="stamp-toolbar hidden">
+      <div class="stamp-toolbar-info">
+        <strong>⏱️ 打时间戳模式：</strong>
+        <span>可边播放边点击按钮记录当前句起止时间，或在列表中直接修改每句时间戳，完成后导出保存。</span>
+      </div>
+      <div class="stamp-toolbar-actions">
+        <button id="stampStartBtn" class="btn btn-stamp" title="将当前音频播放时间设为本句开始时间 (快捷键 S)">
+          📍 设为本句起点 (S)
+        </button>
+        <button id="stampEndNextBtn" class="btn btn-stamp" title="将当前音频时间设为本句结束时间并跳到下一句 (快捷键 D)">
+          ✅ 设为本句终点并下一句 (D)
+        </button>
+        <button id="autoAlignBtn" class="btn btn-outline" title="用音频静音检测+句子长度重新自动估算所有时间戳">
+          🪄 自动识别时间戳
+        </button>
+        <button id="exportSrtBtn" class="btn btn-success">
+          💾 导出 subtitles.srt
+        </button>
+        <button id="exportJsonBtn" class="btn btn-outline">
+          💾 导出 subtitles.json
+        </button>
+      </div>
+    </section>
+
+    <!-- 当前句焦点展示卡片 -->
+    <section class="current-stage">
+      <div class="stage-meta">
+        <span id="currentSentenceIndex" class="sentence-counter">第 0 / 0 句</span>
+        <span id="currentSentenceTime" class="sentence-time">00:00.00 - 00:00.00</span>
+      </div>
+      <div id="stageEn" class="stage-en">请先点击左上角「选择要播放的目录」加载音频与字幕文件</div>
+      <div id="stageZh" class="stage-zh">支持自动读取目录内的 subtitles.srt / subtitles.json 或中英文 txt 文件</div>
+    </section>
+
+    <!-- 全文双语字幕列表 -->
+    <main class="subtitle-list-container">
+      <div id="subtitleList" class="subtitle-list">
+        <div class="empty-state">
+          <div class="empty-icon">📂</div>
+          <p>尚未加载播放目录</p>
+          <p class="empty-hint">
+            点击上方 <strong>「📁 选择要播放的目录」</strong>，选择项目的 <code>resources</code> 文件夹即可开始播放。
+          </p>
+        </div>
+      </div>
+    </main>
+
+    <!-- 底部控制栏 -->
+    <footer class="control-bar">
+      <!-- 进度条 -->
+      <div class="progress-row">
+        <span id="currentTimeLabel" class="time-label">00:00</span>
+        <input id="progressBar" type="range" class="progress-bar" min="0" max="100" step="0.01" value="0" disabled />
+        <span id="durationLabel" class="time-label">00:00</span>
+      </div>
+
+      <!-- 按钮控制区 -->
+      <div class="controls-row">
+        <!-- 左侧占位/当前状态指示 -->
+        <div class="playback-state-box">
+          <span id="playStateDot" class="state-dot stopped"></span>
+          <span id="playStateText" class="state-text">已停止</span>
+        </div>
+
+        <!-- 中间核心播放控制：上一句、播放、暂停、继续、停止、下一句 -->
+        <div class="main-Transport-buttons">
+          <button id="prevBtn" class="btn btn-transport" disabled>⏮ 上一句</button>
+          <button id="playBtn" class="btn btn-transport btn-play" disabled>▶ 播放</button>
+          <button id="pauseBtn" class="btn btn-transport" disabled>⏸ 暂停</button>
+          <button id="resumeBtn" class="btn btn-transport" disabled>⏯ 继续</button>
+          <button id="stopBtn" class="btn btn-transport btn-stop" disabled>⏹ 停止</button>
+          <button id="nextBtn" class="btn btn-transport" disabled>⏭ 下一句</button>
+        </div>
+
+        <!-- 右侧中英文显示/隐藏控制 -->
+        <div class="visibility-buttons">
+          <button id="toggleEnBtn" class="btn btn-toggle active">👁️ 隐藏英文</button>
+          <button id="toggleZhBtn" class="btn btn-toggle active">👁️ 隐藏中文</button>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <audio id="audioPlayer" preload="auto"></audio>
+  <script src="player.js"></script>
+</body>
+</html>
+
