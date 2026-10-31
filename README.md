@@ -58,27 +58,73 @@ EnglishLearnPlugin/
 
 ---
 
-## 📝 素材目录说明与时间戳生成
+## 📂 `resources` 素材目录详细说明
 
-每个课文目录下建议放置：
-- `1 个 .mp3 文件`（音频文件）
-- `2 个 .txt 文件`（英文原文 `.txt` 与中文译文 `.txt`，无需固定文件名，插件会自动根据中文字符比例识别中英文）
-- *(可选)* `subtitles.srt` 或 `subtitles.json`（标准时间戳字幕文件）
+由于音频（`.mp3`）及个人学习资料体积较大，`resources/` 目录已在 [.gitignore](file:///Users/dong/myLearn/EnglishLearnPlugin/.gitignore) 中设置为忽略，不纳入 Git 仓库跟踪。
 
-### 方式一：使用插件自动对齐或内置面板打时间戳
-直接用插件打开只含 `.mp3` + `.txt` 的目录，插件会自动估算每句时间戳；点击右上角 **「⏱️ 打时间戳 / 微调」** 可手动微调并点击 **「💾 导出 subtitles.srt」** 直接写入原目录。
+### 1. 目录组织方式（支持两种结构）
 
-### 方式二：使用 Python 脚本批量预生成时间戳（需本机安装 `ffmpeg`）
-在项目根目录下运行：
+插件同时支持 **单篇目录结构** 和 **多篇总目录结构**：
+
+#### 方式 A：单篇目录（直接将素材放在 `resources/` 下）
+```text
+resources/
+├── animals_in_the_ground.mp3      # 英文朗读音频（如通过 Chrome Audio Capture 录制）
+├── Animals in the ground.txt      # 英文字幕纯文本
+├── 地下的动物.txt                  # 中文字幕纯文本
+├── subtitles.srt                  # [自动/脚本生成] 标准中英双语时间戳字幕文件
+└── subtitles.json                 # [自动/脚本生成] JSON 格式时间戳数据文件
+```
+
+#### 方式 B：多篇总目录（在 `resources/` 下按课文分子文件夹）
+```text
+resources/
+├── 01_Animals_in_the_ground/
+│   ├── animals_in_the_ground.mp3
+│   ├── Animals in the ground.txt
+│   ├── 地下的动物.txt
+│   └── subtitles.srt
+└── 02_Another_Lesson/
+    ├── lesson2.mp3
+    ├── english.txt
+    └── chinese.txt
+```
+> 当选择总目录时，插件会自动扫描所有包含 `.mp3` 的子文件夹，并在界面顶部显示**「当前目录课程」下拉框**，方便随时切换不同课文。
+
+### 2. 素材文件命名与格式要求
+
+1. **音频文件（`.mp3`）**：
+   - 每个课文文件夹内放置 1 个 `.mp3` 文件（文件名任意）。
+   - 支持使用 **Chrome Audio Capture** 等工具从在线阅读网站（如 RAZ / Reading A-Z）内录保存的音频。
+2. **中英文字幕文件（2 个 `.txt`）**：
+   - **文件名无需固定**：插件会自动检测文件内容中的中文字符占比，智能区分哪个是英文字幕、哪个是中文字幕。
+   - **格式与切分规则**：
+     - 英文文本按句末标点（`.`、`?`、`!`）自动切分为自然句（自动保护 `6.7` 等数字中的小数点不被误切）。
+     - 中文文本按句末标点（`、` 除外，以 `。`、`？`、`！`、`：` 为边界）自动切分为自然句，并自动清理文本中的 Markdown 加粗符号（如 `**`）。
+     - 建议保持中英文 `.txt` 拆句后的**总句数一一对应**，以便获得最佳的双语对齐效果。
+3. **时间戳文件（`subtitles.srt` / `subtitles.json`，可选但推荐）**：
+   - 记录每一句精确到毫秒的 `[开始时间, 结束时间]` 以及对应的中英文句子。
+   - 若目录中已存在 `subtitles.srt` 或 `subtitles.json`，插件会直接读取，实现 **0 误差** 的上下句跳转与高亮同步。
+
+### 3. 如何为新的素材目录生成时间戳？
+
+#### 方法一：使用本地 Python 脚本一键生成（推荐，需本机安装 `ffmpeg`）
+将录好的 `.mp3` 和两个 `.txt` 放入 `resources`（或其子目录）后，在项目根目录运行：
 
 ```bash
-# 默认处理 ./resources 目录
+# 默认扫描并处理 ./resources 及其所有子目录
 python3 generate_timestamps.py
 
-# 或指定任意课文目录 / 总目录
-python3 generate_timestamps.py /path/to/your/lessons
+# 或指定任意目录路径
+python3 generate_timestamps.py /path/to/your/lesson_folder
 ```
-脚本会自动在对应目录下生成精确对齐的 `subtitles.srt` 与 `subtitles.json`。
+脚本会自动剔除录音前后的空白与翻页长停顿，通过动态规划算法将每段人声与句子精准对齐，并在该目录下生成 `subtitles.srt` 和 `subtitles.json`。
+
+#### 方法二：直接在浏览器插件中自动对齐 / 手动打轴并保存
+1. 直接在插件中选择尚未生成 `.srt` 的目录（仅含 `.mp3` + 2 个 `.txt`），插件会自动分析音频波形生成初始时间戳。
+2. 点击右上角 **「⏱️ 打时间戳 / 微调」** 按钮：
+   - 可以边听边按键盘 `S`（设为本句起点）和 `D`（设为本句终点并跳下一句）手工打轴，或在列表右侧直接微调每句的起止秒数。
+   - 完成后点击 **「💾 导出 subtitles.srt」** 或 **「💾 导出 subtitles.json」**，插件会直接将文件写入当前选中的课文文件夹中。
 
 ---
 
@@ -90,3 +136,4 @@ python3 generate_timestamps.py /path/to/your/lessons
 | `→` (右方向键) | 跳转到 **下一句** 并播放 |
 | `S` *(仅打时间戳模式下)* | 将当前播放时间设为 **本句起点** |
 | `D` *(仅打时间戳模式下)* | 将当前播放时间设为 **本句终点** 并自动切到下一句 |
+
