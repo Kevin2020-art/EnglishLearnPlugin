@@ -27,6 +27,7 @@ body {
   background-color: var(--bg-page);
   color: var(--text-main);
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -34,6 +35,7 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
   max-width: 1200px;
   margin: 0 auto;
   background: var(--bg-card);
@@ -478,5 +480,124 @@ body {
   background: var(--primary-light);
   color: var(--primary);
   border-color: var(--primary-border);
+}
+
+/* ================== iPhone / 手机竖屏响应式适配 ================== */
+@media (max-width: 768px) {
+  .top-bar {
+    padding: 10px 12px;
+    padding-top: max(10px, env(safe-area-inset-top));
+    gap: 8px;
+  }
+
+  .app-title {
+    font-size: 16px;
+    width: 100%;
+    margin-bottom: 2px;
+  }
+
+  .top-bar-left,
+  .top-bar-right {
+    width: 100%;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .folder-btn,
+  .file-btn {
+    flex: 1;
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .status-badge {
+    font-size: 12px;
+    padding: 4px 10px;
+    max-width: 62%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .current-stage {
+    padding: 14px 16px;
+    min-height: 116px;
+    gap: 6px;
+  }
+
+  .stage-en {
+    font-size: 18px;
+    min-height: 26px;
+  }
+
+  .stage-zh {
+    font-size: 15px;
+    min-height: 22px;
+  }
+
+  .subtitle-list-container {
+    padding: 10px 12px;
+  }
+
+  .subtitle-item {
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+  }
+
+  .sub-index-col {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .sub-en {
+    font-size: 15px;
+  }
+
+  .sub-zh {
+    font-size: 14px;
+  }
+
+  .control-bar {
+    padding: 10px 12px;
+    padding-bottom: max(14px, env(safe-area-inset-bottom));
+    gap: 10px;
+  }
+
+  .controls-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .playback-state-box {
+    display: none;
+  }
+
+  .main-Transport-buttons {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    width: 100%;
+  }
+
+  .btn-transport {
+    padding: 9px 6px;
+    font-size: 13px;
+  }
+
+  .visibility-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+    width: 100%;
+  }
+
+  .btn-toggle {
+    padding: 8px 6px;
+    font-size: 13px;
+  }
 }
 

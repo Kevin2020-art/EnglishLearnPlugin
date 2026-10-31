@@ -14,6 +14,8 @@ let rafId = null;
 // DOM 引用
 const selectDirBtn = document.getElementById("selectDirBtn");
 const dirInput = document.getElementById("dirInput");
+const selectFilesBtn = document.getElementById("selectFilesBtn");
+const filesInput = document.getElementById("filesInput");
 const lessonSelectWrap = document.getElementById("lessonSelectWrap");
 const lessonSelect = document.getElementById("lessonSelect");
 const statusBadge = document.getElementById("statusBadge");
@@ -456,8 +458,13 @@ async function applyScannedLessons() {
   await loadLesson(firstFolderPath);
 }
 
-// 点击“选择要播放的目录”：使用现代 File System Access API，不再弹出“上传”提示
+// 点击“选择目录 (电脑)”：桌面端使用现代 File System Access API，iOS 设备自动转为多选文件
 selectDirBtn.addEventListener("click", async () => {
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  if (isIOS) {
+    filesInput.click();
+    return;
+  }
   if (typeof window.showDirectoryPicker === "function") {
     try {
       const dirHandle = await window.showDirectoryPicker({ mode: "read" });
@@ -473,9 +480,52 @@ selectDirBtn.addEventListener("click", async () => {
       }
     }
   } else {
-    // 降级兜底
     dirInput.click();
   }
+});
+
+// 点击“选文件 (iPhone/iCloud)”：直接多选同一课文的 mp3 + txt/md/srt/json
+selectFilesBtn.addEventListener("click", () => {
+  filesInput.value = "";
+  filesInput.click();
+});
+
+filesInput.addEventListener("change", async (e) => {
+  const files = Array.from(e.target.files || []);
+  if (files.length === 0) return;
+
+  lessonsMap.clear();
+  const group = {
+    folderPath: "iCloud所选课文",
+    name: "所选课文",
+    dirHandle: null,
+    mp3Files: [],
+    txtFiles: [],
+    srtFiles: [],
+    jsonFiles: []
+  };
+
+  for (const file of files) {
+    const lower = file.name.toLowerCase();
+    if (lower.endsWith(".mp3")) {
+      group.mp3Files.push(file);
+      group.name = file.name.replace(/\.mp3$/i, "");
+    } else if (lower.endsWith(".srt")) {
+      group.srtFiles.push(file);
+    } else if (lower.endsWith(".json")) {
+      group.jsonFiles.push(file);
+    } else if (lower.endsWith(".txt") || (lower.endsWith(".md") && lower !== "readme.md")) {
+      group.txtFiles.push(file);
+    }
+  }
+
+  if (group.mp3Files.length === 0) {
+    statusBadge.textContent = "⚠️ 请同时勾选至少 1 个 .mp3 文件和对应的 .txt/.md 字幕文件";
+    return;
+  }
+
+  lessonsMap.set(group.folderPath, group);
+  await applyScannedLessons();
 });
 
 // 兼容兜底：传统 input[webkitdirectory]

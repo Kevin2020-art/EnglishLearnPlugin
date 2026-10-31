@@ -2,7 +2,12 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="英语精听" />
+  <link rel="apple-touch-icon" href="icons/icon128.png" />
+  <link rel="manifest" href="manifest.webmanifest" />
   <title>英语听力与双语字幕精听播放器</title>
   <link rel="stylesheet" href="player.css" />
 </head>
@@ -13,9 +18,14 @@
       <div class="top-bar-left">
         <h1 class="app-title">🎧 英语双语精听播放器</h1>
         <button id="selectDirBtn" type="button" class="btn btn-primary folder-btn">
-          📁 选择要播放的目录
+          📁 选择目录 (电脑)
         </button>
         <input id="dirInput" type="file" webkitdirectory directory multiple hidden />
+
+        <button id="selectFilesBtn" type="button" class="btn btn-outline file-btn">
+          📱 选文件 (iPhone/iCloud)
+        </button>
+        <input id="filesInput" type="file" multiple accept=".mp3,.txt,.md,.srt,.json,audio/*,text/*" hidden />
 
         <div id="lessonSelectWrap" class="lesson-select-wrap hidden">
           <label for="lessonSelect">当前目录课程：</label>
@@ -73,7 +83,8 @@
           <div class="empty-icon">📂</div>
           <p>尚未加载播放目录</p>
           <p class="empty-hint">
-            点击上方 <strong>「📁 选择要播放的目录」</strong>，选择项目的 <code>resources</code> 文件夹即可开始播放。
+            电脑端请点击 <strong>「📁 选择目录 (电脑)」</strong> 选择 <code>resources</code> 文件夹；<br />
+            iPhone 端请点击 <strong>「📱 选文件 (iPhone/iCloud)」</strong> 在 iCloud 文件中同时勾选 <code>1个mp3 + 2个txt/md</code> 即可自动对齐播放。
           </p>
         </div>
       </div>
