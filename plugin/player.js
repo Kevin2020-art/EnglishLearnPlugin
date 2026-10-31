@@ -180,18 +180,33 @@ function cleanMarkdownLine(rawLine) {
     .trim();
 }
 
-// 按自然句切分英文文本（支持 .txt 与 .md，保护 6.7 等小数点）
+// 按自然句切分英文文本（支持 .txt 与 .md，保护 6.7 等小数点，自动识别 RAZ 常见无标点引导词）
 function splitEnglishSentences(text) {
-  const fixed = text.replace(/Beyond the book Is your class/g, "Beyond the book. Is your class");
   const result = [];
-  for (const rawLine of fixed.split(/\r?\n/)) {
-    const line = cleanMarkdownLine(rawLine);
+  for (const rawLine of text.split(/\r?\n/)) {
+    let line = cleanMarkdownLine(rawLine);
     if (!line) continue;
+    // 自动在 Focus Question / Math Moment / Be a Scientist / Beyond the Book 后补齐漏掉的句号
+    line = line.replace(
+      /(Focus\s+Question|Math\s+Moment|Be\s+a\s+Scientist|Beyond\s+the\s+Book)\s+(?=[A-Z])/gi,
+      "$1. "
+    );
     const safeLine = line.replace(/(\d)\.(\d)/g, "$1__DOT__$2");
-    const parts = safeLine
+    const rawParts = safeLine
       .split(/(?<=[.?!])\s+/)
       .map((p) => p.replace(/__DOT__/g, ".").trim())
       .filter(Boolean);
+
+    // 合并像 "And grow." + "And grow." 这样连续重复的极短句（与中文“并且长啊，长啊，长。”和连读音频保持一致）
+    const parts = [];
+    for (const p of rawParts) {
+      if (parts.length > 0 && p.length <= 12 && p.toLowerCase() === parts[parts.length - 1].toLowerCase()) {
+        parts[parts.length - 1] = `${parts[parts.length - 1]} ${p}`;
+      } else {
+        parts.push(p);
+      }
+    }
+
     parts.forEach((p, idx) => {
       result.push({ text: p, isParaEnd: idx === parts.length - 1 });
     });
@@ -307,29 +322,35 @@ async function autoDetectTimestampsFromAudio(mp3File, enMetaList, zhList) {
 
   for (let i = 1; i <= N; i++) {
     const { text, isParaEnd } = enMetaList[i - 1];
-    const expDur = Math.max(0.8, text.length * secPerChar);
+    const expDur = Math.max(0.7, 0.25 + text.length * secPerChar * 0.92);
     for (let j = i; j <= M - (N - i); j++) {
-      const kMin = Math.max(i - 1, j - 5);
+      const kMin = Math.max(i - 1, j - 6);
       for (let k = kMin; k < j; k++) {
         if (dp[i - 1][k] >= INF) continue;
         let speechDur = 0;
         for (let c = k; c < j; c++) speechDur += chunks[c][1] - chunks[c][0];
-        const durCost = Math.pow((speechDur - expDur) / Math.max(1.5, expDur * 0.5), 2);
+        const ratio = Math.max(speechDur / expDur, expDur / Math.max(0.1, speechDur));
+        const durCost =
+          Math.pow((speechDur - expDur) / 0.9, 2) + Math.pow((ratio - 1.0) * 3.5, 2);
 
         let internalGapCost = 0;
         for (let c = k; c < j - 1; c++) {
           const gap = chunks[c + 1][0] - chunks[c][1];
-          internalGapCost += Math.pow(gap / 0.35, 3);
+          if (gap > 0.75) {
+            internalGapCost += Math.pow((gap - 0.5) / 0.3, 2) * 2.5;
+          } else {
+            internalGapCost += Math.pow(gap / 0.6, 2) * 0.5;
+          }
         }
 
         let boundaryCost = 0;
         if (j < M) {
           const gapAfter = chunks[j][0] - chunks[j - 1][1];
-          if (gapAfter < 0.65) {
-            boundaryCost += Math.pow((0.65 - gapAfter) / 0.15, 2);
+          if (gapAfter < 0.75) {
+            boundaryCost += Math.pow((0.75 - gapAfter) / 0.12, 2);
           }
-          if (isParaEnd && gapAfter < 1.0) {
-            boundaryCost += 4.0;
+          if (isParaEnd && gapAfter < 1.1) {
+            boundaryCost += 6.0;
           }
         }
 

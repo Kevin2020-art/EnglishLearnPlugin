@@ -29,14 +29,30 @@ def clean_markdown_line(line: str) -> str:
 
 
 def split_english_sentences(text: str):
-    """按自然句切分英文文本，保留是否段落末尾的标记，保护小数点不切分。"""
-    text = text.replace("Beyond the book Is your class", "Beyond the book. Is your class")
+    """按自然句切分英文文本，保留是否段落末尾的标记，保护小数点不切分，自动识别 RAZ 常见引导词。"""
     sents = []
     for raw_line in text.splitlines():
         line = clean_markdown_line(raw_line)
         if not line:
             continue
-        parts = [p.strip() for p in re.split(r"(?<=[.?!])(?<!\d\.)\s+", line) if p.strip()]
+        line = re.sub(
+            r"(Focus\s+Question|Math\s+Moment|Be\s+a\s+Scientist|Beyond\s+the\s+Book)\s+(?=[A-Z])",
+            r"\1. ",
+            line,
+            flags=re.IGNORECASE,
+        )
+        safe_line = re.sub(r"(\d)\.(\d)", r"\1__DOT__\2", line)
+        raw_parts = [
+            p.replace("__DOT__", ".").strip()
+            for p in re.split(r"(?<=[.?!])\s+", safe_line)
+            if p.strip()
+        ]
+        parts = []
+        for p in raw_parts:
+            if parts and len(p) <= 12 and p.lower() == parts[-1].lower():
+                parts[-1] = f"{parts[-1]} {p}"
+            else:
+                parts.append(p)
         for idx, p in enumerate(parts):
             sents.append((p, idx == len(parts) - 1))
     return sents
@@ -129,26 +145,30 @@ def align_sentences_to_chunks(en_sents_with_meta, zh_sents, chunks):
 
     for i in range(1, N + 1):
         text, is_para_end = en_sents_with_meta[i - 1]
-        exp_dur = max(0.8, len(text) * sec_per_char)
+        exp_dur = max(0.7, 0.25 + len(text) * sec_per_char * 0.92)
         for j in range(i, M - (N - i) + 1):
-            for k in range(max(i - 1, j - 5), j):
+            for k in range(max(i - 1, j - 6), j):
                 if dp[i - 1][k] >= INF:
                     continue
                 speech_dur = sum(chunks[c][1] - chunks[c][0] for c in range(k, j))
-                dur_cost = ((speech_dur - exp_dur) / max(1.5, exp_dur * 0.5)) ** 2
+                ratio = max(speech_dur / exp_dur, exp_dur / max(0.1, speech_dur))
+                dur_cost = ((speech_dur - exp_dur) / 0.9) ** 2 + ((ratio - 1.0) * 3.5) ** 2
 
                 internal_gap_cost = 0.0
                 for c in range(k, j - 1):
                     gap = chunks[c + 1][0] - chunks[c][1]
-                    internal_gap_cost += (gap / 0.35) ** 3
+                    if gap > 0.75:
+                        internal_gap_cost += ((gap - 0.5) / 0.3) ** 2 * 2.5
+                    else:
+                        internal_gap_cost += (gap / 0.6) ** 2 * 0.5
 
                 boundary_cost = 0.0
                 if j < M:
                     gap_after = chunks[j][0] - chunks[j - 1][1]
-                    if gap_after < 0.65:
-                        boundary_cost += ((0.65 - gap_after) / 0.15) ** 2
-                    if is_para_end and gap_after < 1.0:
-                        boundary_cost += 4.0
+                    if gap_after < 0.75:
+                        boundary_cost += ((0.75 - gap_after) / 0.12) ** 2
+                    if is_para_end and gap_after < 1.1:
+                        boundary_cost += 6.0
 
                 cost = dp[i - 1][k] + dur_cost + internal_gap_cost + boundary_cost
                 if cost < dp[i][j]:
