@@ -17,13 +17,23 @@ def is_chinese_text(text: str) -> bool:
     return zh_chars > len(text) * 0.1
 
 
+def clean_markdown_line(line: str) -> str:
+    """清理 Markdown 语法符号（如 # 标题、**加粗**、> 引用、- 列表等）。"""
+    line = re.sub(r"^\s*#{1,6}\s+", "", line)
+    line = re.sub(r"^\s*>\s+", "", line)
+    line = re.sub(r"^\s*[-*+]\s+", "", line)
+    line = re.sub(r"\*\*(.*?)\*\*", r"\1", line)
+    line = re.sub(r"__(.*?)__", r"\1", line)
+    line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
+    return line.replace("**", "").strip()
+
+
 def split_english_sentences(text: str):
     """按自然句切分英文文本，保留是否段落末尾的标记，保护小数点不切分。"""
-    # 修正常见的标题漏句号情况
     text = text.replace("Beyond the book Is your class", "Beyond the book. Is your class")
     sents = []
-    for line in text.splitlines():
-        line = re.sub(r"\*\*.*?\*\*", lambda m: m.group(0).replace("*", ""), line).strip()
+    for raw_line in text.splitlines():
+        line = clean_markdown_line(raw_line)
         if not line:
             continue
         parts = [p.strip() for p in re.split(r"(?<=[.?!])(?<!\d\.)\s+", line) if p.strip()]
@@ -33,10 +43,10 @@ def split_english_sentences(text: str):
 
 
 def split_chinese_sentences(text: str):
-    """按自然句切分中文文本，去除 Markdown 加粗符号。"""
+    """按自然句切分中文文本，去除 Markdown 语法符号。"""
     sents = []
-    for line in text.splitlines():
-        line = re.sub(r"\*\*.*?\*\*", lambda m: m.group(0).replace("*", ""), line).strip()
+    for raw_line in text.splitlines():
+        line = clean_markdown_line(raw_line)
         if not line:
             continue
         parts = re.findall(r"[^。？！：]+(?:(?:\d+\.\d+)[^。？！：]*)*(?:[。？！：]+|$)", line)
@@ -178,11 +188,11 @@ def format_srt_time(seconds: float) -> str:
 def process_directory(folder: Path):
     mp3_files = sorted(folder.glob("*.mp3"))
     txt_files = [
-        p for p in sorted(folder.glob("*.txt"))
-        if p.name.lower() not in ("subtitles.txt",)
+        p for p in sorted(list(folder.glob("*.txt")) + list(folder.glob("*.md")))
+        if p.name.lower() not in ("subtitles.txt", "readme.md")
     ]
     if not mp3_files or len(txt_files) < 1:
-        print(f"跳过 {folder}: 未找到 mp3 或 txt 文件")
+        print(f"跳过 {folder}: 未找到 mp3 或 txt/md 文件")
         return
 
     mp3_path = mp3_files[0]

@@ -167,12 +167,25 @@ function parseSrtContent(srtText) {
   return items;
 }
 
-// 按自然句切分英文文本（保护 6.7 等小数点）
+// 清理 Markdown 语法符号（标题 #、加粗 **、引用 >、列表 - 等）
+function cleanMarkdownLine(rawLine) {
+  return rawLine
+    .replace(/^\s*#{1,6}\s+/, "")
+    .replace(/^\s*>\s+/, "")
+    .replace(/^\s*[-*+]\s+/, "")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/__(.*?)__/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\*\*/g, "")
+    .trim();
+}
+
+// 按自然句切分英文文本（支持 .txt 与 .md，保护 6.7 等小数点）
 function splitEnglishSentences(text) {
   const fixed = text.replace(/Beyond the book Is your class/g, "Beyond the book. Is your class");
   const result = [];
   for (const rawLine of fixed.split(/\r?\n/)) {
-    const line = rawLine.replace(/\*\*/g, "").trim();
+    const line = cleanMarkdownLine(rawLine);
     if (!line) continue;
     const safeLine = line.replace(/(\d)\.(\d)/g, "$1__DOT__$2");
     const parts = safeLine
@@ -186,11 +199,11 @@ function splitEnglishSentences(text) {
   return result;
 }
 
-// 按自然句切分中文文本
+// 按自然句切分中文文本（支持 .txt 与 .md）
 function splitChineseSentences(text) {
   const result = [];
   for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.replace(/\*\*/g, "").trim();
+    const line = cleanMarkdownLine(rawLine);
     if (!line) continue;
     const matches = line.match(/[^。？！：]+(?:(?:\d+\.\d+)[^。？！：]*)*(?:[。？！：]+|$)/g);
     if (matches) {
@@ -364,12 +377,18 @@ async function scanDirectoryHandle(dirHandle, parentPath = "") {
     if (entry.kind === "file") {
       if (entry.name.startsWith(".")) continue;
       const lower = entry.name.toLowerCase();
-      if (lower.endsWith(".mp3") || lower.endsWith(".srt") || lower.endsWith(".json") || lower.endsWith(".txt")) {
+      if (
+        lower.endsWith(".mp3") ||
+        lower.endsWith(".srt") ||
+        lower.endsWith(".json") ||
+        lower.endsWith(".txt") ||
+        (lower.endsWith(".md") && lower !== "readme.md")
+      ) {
         const file = await entry.getFile();
         if (lower.endsWith(".mp3")) group.mp3Files.push(file);
         else if (lower.endsWith(".srt")) group.srtFiles.push(file);
         else if (lower.endsWith(".json")) group.jsonFiles.push(file);
-        else if (lower.endsWith(".txt")) group.txtFiles.push(file);
+        else if (lower.endsWith(".txt") || lower.endsWith(".md")) group.txtFiles.push(file);
       }
     } else if (entry.kind === "directory" && !entry.name.startsWith(".")) {
       subDirs.push(entry);
@@ -468,7 +487,7 @@ dirInput.addEventListener("change", async (e) => {
     if (lower.endsWith(".mp3")) group.mp3Files.push(file);
     else if (lower.endsWith(".srt")) group.srtFiles.push(file);
     else if (lower.endsWith(".json")) group.jsonFiles.push(file);
-    else if (lower.endsWith(".txt")) group.txtFiles.push(file);
+    else if (lower.endsWith(".txt") || (lower.endsWith(".md") && lower !== "readme.md")) group.txtFiles.push(file);
   }
 
   for (const [key, val] of lessonsMap.entries()) {
