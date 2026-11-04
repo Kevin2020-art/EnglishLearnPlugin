@@ -334,6 +334,23 @@ body {
   line-height: 1.45;
 }
 
+/* 中英句数对不上的句子（可能漏了标点）标黄提示 */
+.subtitle-item.has-warn {
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+
+.subtitle-item.has-warn.active {
+  background: #fef3c7;
+  border-color: var(--warning);
+}
+
+.sub-warn {
+  font-size: 12px;
+  color: #92400e;
+  margin-top: 2px;
+}
+
 /* 打时间戳微调列 */
 .sub-stamp-col {
   display: flex;

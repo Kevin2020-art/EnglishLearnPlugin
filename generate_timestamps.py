@@ -29,17 +29,20 @@ def clean_markdown_line(line: str) -> str:
 
 
 def split_english_sentences(text: str):
-    """按自然句切分英文文本，保留是否段落末尾的标记，保护小数点不切分，自动识别 RAZ 常见引导词。"""
+    """按自然句切分英文文本，保护小数点不切分，自动识别 RAZ 常见引导词。
+
+    返回 [{"text", "line", "para_end"}]，line 为原文件行号（从 1 开始）。
+    """
     sents = []
-    for raw_line in text.splitlines():
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
         line = clean_markdown_line(raw_line)
         if not line:
             continue
+        # 关键词不区分大小写，但后面必须是大写字母开头的新句子
         line = re.sub(
-            r"(Focus\s+Question|Math\s+Moment|Be\s+a\s+Scientist|Beyond\s+the\s+Book)\s+(?=[A-Z])",
+            r"\b([Ff]ocus\s+[Qq]uestion|[Mm]ath\s+[Mm]oment|[Bb]e\s+a\s+[Ss]cientist|[Bb]eyond\s+the\s+[Bb]ook)\s+(?=[A-Z])",
             r"\1. ",
             line,
-            flags=re.IGNORECASE,
         )
         safe_line = re.sub(r"(\d)\.(\d)", r"\1__DOT__\2", line)
         raw_parts = [
@@ -54,22 +57,140 @@ def split_english_sentences(text: str):
             else:
                 parts.append(p)
         for idx, p in enumerate(parts):
-            sents.append((p, idx == len(parts) - 1))
+            sents.append({"text": p, "line": line_no, "para_end": idx == len(parts) - 1})
     return sents
 
 
 def split_chinese_sentences(text: str):
-    """按自然句切分中文文本，去除 Markdown 语法符号。"""
+    """按自然句切分中文文本，去除 Markdown 语法符号。
+
+    返回 [{"text", "line", "para_end"}]，line 为原文件行号（从 1 开始）。
+    """
     sents = []
-    for raw_line in text.splitlines():
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
         line = clean_markdown_line(raw_line)
         if not line:
             continue
-        parts = re.findall(r"[^。？！：]+(?:(?:\d+\.\d+)[^。？！：]*)*(?:[。？！：]+|$)", line)
-        for p in parts:
-            if p.strip():
-                sents.append(p.strip())
+        parts = [
+            p.strip()
+            for p in re.findall(r"[^。？！：]+(?:(?:\d+\.\d+)[^。？！：]*)*(?:[。？！：]+|$)", line)
+            if p.strip()
+        ]
+        for idx, p in enumerate(parts):
+            sents.append({"text": p, "line": line_no, "para_end": idx == len(parts) - 1})
     return sents
+
+
+def _text_len(text: str) -> int:
+    return len(re.sub(r"\s+", "", text))
+
+
+def _numbers(text: str):
+    """提取文本中的阿拉伯数字（去掉千分位逗号），用作中英对齐的锚点。"""
+    return re.findall(r"\d+(?:\.\d+)?", re.sub(r"(?<=\d),(?=\d{3})", "", text))
+
+
+# 中英句子组合方式及其惩罚：(英文句数, 中文句数) -> 额外代价
+_BEAD_PENALTY = {
+    (1, 1): 0.0,
+    (1, 2): 2.5,
+    (2, 1): 2.5,
+    (1, 3): 5.0,
+    (3, 1): 5.0,
+    (1, 0): 6.0,
+    (0, 1): 6.0,
+}
+
+
+def align_bilingual(en_sents, zh_sents):
+    """把英文句子和中文句子做双语对齐（类似 Gale-Church 算法）。
+
+    不再按序号硬配，而是用动态规划允许 1:1 / 1:2 / 2:1 / 1:3 / 3:1 / 1:0 / 0:1 的组合，
+    依据中英文长度比例和段落边界打分。某处漏了标点只会让那一处变成 1:2 或 2:1，
+    不会让后面的句子一路错开。
+
+    返回 [{"en", "zh", "para_end", "warn"}]，warn 非空表示这里中英句数对不上。
+    """
+    if not zh_sents:
+        return [{"en": e["text"], "zh": "", "para_end": e["para_end"], "warn": ""} for e in en_sents]
+    if not en_sents:
+        return [{"en": "", "zh": z["text"], "para_end": z["para_end"], "warn": ""} for z in zh_sents]
+
+    en_len = [_text_len(e["text"]) for e in en_sents]
+    zh_len = [_text_len(z["text"]) for z in zh_sents]
+    ratio = sum(zh_len) / max(1, sum(en_len))  # 每个英文字符大约对应多少中文字符
+    en_nums_list = [_numbers(e["text"]) for e in en_sents]
+    zh_nums_list = [_numbers(z["text"]) for z in zh_sents]
+
+    N, K = len(en_sents), len(zh_sents)
+    INF = float("inf")
+    dp = [[INF] * (K + 1) for _ in range(N + 1)]
+    back = [[None] * (K + 1) for _ in range(N + 1)]
+    dp[0][0] = 0.0
+
+    def group_cost(i0, a, j0, b):
+        le = sum(en_len[i0:i0 + a])
+        lz = sum(zh_len[j0:j0 + b])
+        expected = ratio * le
+        cost = (lz - expected) ** 2 / (expected + 6.0)
+        cost += _BEAD_PENALTY[(a, b)]
+        # 一组内跨越了原文的段落（行）边界，说明合并得不太合理
+        for k in range(i0, i0 + a - 1):
+            if en_sents[k]["para_end"]:
+                cost += 2.0
+        for k in range(j0, j0 + b - 1):
+            if zh_sents[k]["para_end"]:
+                cost += 2.0
+        # 数字锚点：两边出现的数字应该落在同一组里
+        en_nums = [n for k in range(i0, i0 + a) for n in en_nums_list[k]]
+        zh_nums = [n for k in range(j0, j0 + b) for n in zh_nums_list[k]]
+        if en_nums or zh_nums:
+            unmatched = len(set(en_nums) ^ set(zh_nums))
+            cost += 2.0 * min(unmatched, 3)
+        # 段落末尾应该同时结束
+        if a and b and en_sents[i0 + a - 1]["para_end"] != zh_sents[j0 + b - 1]["para_end"]:
+            cost += 0.8
+        return cost
+
+    for i in range(N + 1):
+        for j in range(K + 1):
+            if dp[i][j] == INF:
+                continue
+            for (a, b) in _BEAD_PENALTY:
+                if i + a > N or j + b > K:
+                    continue
+                c = dp[i][j] + group_cost(i, a, j, b)
+                if c < dp[i + a][j + b]:
+                    dp[i + a][j + b] = c
+                    back[i + a][j + b] = (a, b)
+
+    units = []
+    i, j = N, K
+    while i > 0 or j > 0:
+        a, b = back[i][j]
+        ens = en_sents[i - a:i]
+        zhs = zh_sents[j - b:j]
+        warn = ""
+        if (a, b) != (1, 1):
+            en_lines = sorted({e["line"] for e in ens})
+            zh_lines = sorted({z["line"] for z in zhs})
+            warn = (
+                f"英文 {a} 句 ↔ 中文 {b} 句"
+                + (f"（英文第 {','.join(map(str, en_lines))} 行" if en_lines else "（英文无对应")
+                + (f"，中文第 {','.join(map(str, zh_lines))} 行）" if zh_lines else "，中文无对应）")
+                + "，可能漏了标点"
+            )
+        units.append({
+            "en": " ".join(e["text"] for e in ens),
+            "zh": "".join(z["text"] for z in zhs),
+            "para_end": (ens[-1]["para_end"] if ens else zhs[-1]["para_end"]),
+            "warn": warn,
+            # 合并单元里很可能藏着真实的句间停顿（比如英文漏了句号），音频对齐时允许这么多个长停顿
+            "extra_breaks": max(a, b) - 1,
+        })
+        i, j = i - a, j - b
+    units.reverse()
+    return units
 
 
 def detect_audio_chunks(mp3_path: Path, noise_db: int = -35, min_silence: float = 0.35):
@@ -110,33 +231,37 @@ def detect_audio_chunks(mp3_path: Path, noise_db: int = -35, min_silence: float 
     return chunks
 
 
-def align_sentences_to_chunks(en_sents_with_meta, zh_sents, chunks):
-    """使用动态规划将 M 个原子语音块精准对齐到 N 个句子。"""
-    N = len(en_sents_with_meta)
+def align_units_to_chunks(units, chunks):
+    """使用动态规划将 M 个原子语音块对齐到 N 个双语单元（以英文长度估算时长）。"""
+    N = len(units)
     M = len(chunks)
+    # 没有英文时用中文长度折算（中文 1 字约等于英文 3 个字符）
+    lens = [max(1, len(u["en"]) if u["en"] else _text_len(u["zh"]) * 3) for u in units]
+
+    def make_item(idx, s, e):
+        u = units[idx]
+        item = {"index": idx + 1, "start": round(s, 2), "end": round(e, 2), "en": u["en"], "zh": u["zh"]}
+        if u.get("warn"):
+            item["warn"] = u["warn"]
+        return item
+
+    if N == 0:
+        return []
     if M < N:
         # 若原子块少于句子数，按字数比例线性分配
         total_start = chunks[0][0] if chunks else 0.0
         total_end = chunks[-1][1] if chunks else N * 3.0
-        total_chars = sum(max(1, len(s[0])) for s in en_sents_with_meta)
+        total_chars = sum(lens)
         cur = total_start
         result = []
-        for idx, (en_text, _) in enumerate(en_sents_with_meta):
-            dur = (total_end - total_start) * (max(1, len(en_text)) / total_chars)
-            zh_text = zh_sents[idx] if idx < len(zh_sents) else ""
-            result.append({
-                "index": idx + 1,
-                "start": round(cur, 2),
-                "end": round(cur + dur, 2),
-                "en": en_text,
-                "zh": zh_text,
-            })
+        for idx in range(N):
+            dur = (total_end - total_start) * lens[idx] / total_chars
+            result.append(make_item(idx, cur, cur + dur))
             cur += dur
         return result
 
     total_speech = sum(e - s for s, e in chunks)
-    total_chars = sum(len(s[0]) for s in en_sents_with_meta)
-    sec_per_char = total_speech / max(1, total_chars)
+    sec_per_char = total_speech / max(1, sum(lens))
 
     INF = 1e18
     dp = [[INF] * (M + 1) for _ in range(N + 1)]
@@ -144,19 +269,24 @@ def align_sentences_to_chunks(en_sents_with_meta, zh_sents, chunks):
     dp[0][0] = 0.0
 
     for i in range(1, N + 1):
-        text, is_para_end = en_sents_with_meta[i - 1]
-        exp_dur = max(0.7, 0.25 + len(text) * sec_per_char * 0.92)
+        is_para_end = units[i - 1]["para_end"]
+        extra_breaks = units[i - 1].get("extra_breaks", 0)
+        exp_dur = max(0.7, 0.25 + lens[i - 1] * sec_per_char * 0.92)
         for j in range(i, M - (N - i) + 1):
-            for k in range(max(i - 1, j - 6), j):
+            for k in range(max(i - 1, j - 8), j):
                 if dp[i - 1][k] >= INF:
                     continue
                 speech_dur = sum(chunks[c][1] - chunks[c][0] for c in range(k, j))
                 ratio = max(speech_dur / exp_dur, exp_dur / max(0.1, speech_dur))
                 dur_cost = ((speech_dur - exp_dur) / 0.9) ** 2 + ((ratio - 1.0) * 3.5) ** 2
 
+                internal_gaps = sorted(
+                    (chunks[c + 1][0] - chunks[c][1] for c in range(k, j - 1)), reverse=True
+                )
+                # 合并单元允许若干个最长的停顿不计罚分
+                internal_gaps = internal_gaps[extra_breaks:]
                 internal_gap_cost = 0.0
-                for c in range(k, j - 1):
-                    gap = chunks[c + 1][0] - chunks[c][1]
+                for gap in internal_gaps:
                     if gap > 0.75:
                         internal_gap_cost += ((gap - 0.5) / 0.3) ** 2 * 2.5
                     else:
@@ -183,17 +313,7 @@ def align_sentences_to_chunks(en_sents_with_meta, zh_sents, chunks):
         curr = prev
     aligned.reverse()
 
-    result = []
-    for idx, ((s, e), (en_text, _)) in enumerate(zip(aligned, en_sents_with_meta)):
-        zh_text = zh_sents[idx] if idx < len(zh_sents) else ""
-        result.append({
-            "index": idx + 1,
-            "start": round(s, 2),
-            "end": round(e, 2),
-            "en": en_text,
-            "zh": zh_text,
-        })
-    return result
+    return [make_item(idx, s, e) for idx, (s, e) in enumerate(aligned)]
 
 
 def format_srt_time(seconds: float) -> str:
@@ -226,8 +346,9 @@ def process_directory(folder: Path):
 
     en_sents = split_english_sentences(en_text)
     zh_sents = split_chinese_sentences(zh_text)
+    units = align_bilingual(en_sents, zh_sents)
     chunks = detect_audio_chunks(mp3_path)
-    items = align_sentences_to_chunks(en_sents, zh_sents, chunks)
+    items = align_units_to_chunks(units, chunks)
 
     # 1. 保存 subtitles.json
     json_path = folder / "subtitles.json"
@@ -249,6 +370,13 @@ def process_directory(folder: Path):
     print(f"✅ 已生成时间戳文件 ({len(items)} 句):")
     print(f"   - {srt_path}")
     print(f"   - {json_path}")
+    warns = [it for it in items if it.get("warn")]
+    if warns:
+        print(f"⚠️  有 {len(warns)} 处中英句数对不上，建议检查原文标点:")
+        for it in warns:
+            print(f"   第 {it['index']} 句: {it['warn']}")
+            print(f"      EN: {it['en']}")
+            print(f"      ZH: {it['zh']}")
 
 
 if __name__ == "__main__":
