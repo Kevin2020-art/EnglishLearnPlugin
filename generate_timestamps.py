@@ -549,10 +549,19 @@ def try_whisper_word_timestamps(mp3_path: Path):
             word_timestamps=True,
         )
         words = []
-        seg_texts = []
+        paras = []
+        cur_para = []
+        prev_end = None
         for seg in res.get("segments", []):
-            if seg.get("text", "").strip():
-                seg_texts.append(seg["text"].strip())
+            seg_t = seg.get("text", "").strip()
+            seg_s = float(seg.get("start", 0.0))
+            seg_e = float(seg.get("end", 0.0))
+            if seg_t:
+                if prev_end is not None and (seg_s - prev_end) >= 1.5 and cur_para:
+                    paras.append(" ".join(cur_para))
+                    cur_para = []
+                cur_para.append(seg_t)
+                prev_end = seg_e
             for w in seg.get("words", []):
                 norm = re.sub(r"[^a-z0-9]", "", w.get("word", "").lower())
                 if norm:
@@ -562,8 +571,10 @@ def try_whisper_word_timestamps(mp3_path: Path):
                         "start": float(w["start"]),
                         "end": float(w["end"]),
                     })
+        if cur_para:
+            paras.append(" ".join(cur_para))
         if words:
-            return words, "\n".join(seg_texts)
+            return words, "\n\n".join(paras)
     except ImportError:
         pass
     except Exception as e:
