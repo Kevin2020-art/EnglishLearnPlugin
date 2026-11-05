@@ -791,10 +791,19 @@ def process_directory(folder: Path, by_newline: bool = False):
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if a != "--by-newline"]
     use_newline = "--by-newline" in sys.argv[1:]
-    target = Path(args[0]) if args else Path(__file__).parent / "resources"
-    if target.is_dir():
+    raw_path = args[0] if args else str(Path(__file__).parent / "resources")
+    # 去除两端可能多余的引号与转义
+    raw_path = raw_path.strip("\"'“”‘’")
+    target = Path(os.path.expanduser(raw_path)).resolve()
+
+    if target.is_file():
+        # 如果用户传的是 mp3 文件路径，自动取其所在文件夹
+        process_directory(target.parent, by_newline=use_newline)
+    elif target.is_dir():
         process_directory(target, by_newline=use_newline)
         for sub in sorted(target.iterdir()):
             if sub.is_dir():
                 process_directory(sub, by_newline=use_newline)
+    else:
+        print(f"❌ 路径不存在: {target}")
 
