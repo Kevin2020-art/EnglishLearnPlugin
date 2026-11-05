@@ -600,8 +600,10 @@ def try_whisper_word_timestamps(mp3_path: Path):
     return None, None
 
 
-def align_units_with_whisper_words(units, whisper_words):
-    """利用 Whisper 识别出的词级时间戳，将每个双语单元精确对齐到对应英文首尾单词的发音时间。"""
+def align_units_with_whisper_words(units, whisper_words, chunks=None):
+    """利用 Whisper 识别出的词级时间戳，将每个双语单元精确对齐到对应英文首尾单词的发音时间，
+    并结合静音检测 chunks 消除 Whisper 将句前静音算入句首单词 start 的偏差。
+    """
     unit_tokens = []
     flat_unit_norms = []
     token_to_unit = []
@@ -652,8 +654,27 @@ def align_units_with_whisper_words(units, whisper_words):
         if w_indices:
             w_start = min(w_indices)
             w_end = max(w_indices)
-            start_t = round(whisper_words[w_start]["start"], 2)
-            end_t = round(whisper_words[w_end]["end"], 2)
+            first_w = whisper_words[w_start]
+            last_w = whisper_words[w_end]
+            start_t = first_w["start"]
+            end_t = last_w["end"]
+
+            # Whisper 的 DTW 经常把句前的静音算进句首单词的 start 里：
+            # 如果 chunks 显示在 [first_w.start, first_w.end] 之间其实有一段静音结束点 cs，则以真正开口的 cs 为准
+            if chunks:
+                for cs, ce in chunks:
+                    if start_t - 0.05 <= cs < first_w["end"] - 0.04 and ce > first_w["start"] + 0.05:
+                        if cs > start_t:
+                            start_t = cs
+                        break
+                for cs, ce in reversed(chunks):
+                    if last_w["start"] + 0.04 < ce <= end_t + 0.05 and cs < last_w["end"] - 0.05:
+                        if ce < end_t:
+                            end_t = ce
+                        break
+
+            start_t = round(max(prev_end, start_t), 2)
+            end_t = round(end_t, 2)
             if end_t <= start_t:
                 end_t = round(start_t + 0.4, 2)
             prev_end = end_t
@@ -720,11 +741,11 @@ def process_directory(folder: Path, by_newline: bool = False):
     zh_sents = split_chinese_sentences(zh_text)
     units = align_paragraphs_by_newline(en_sents, zh_sents) if by_newline else align_bilingual(en_sents, zh_sents)
 
+    chunks = detect_audio_chunks(mp3_path)
     items = None
     if whisper_words:
-        items = align_units_with_whisper_words(units, whisper_words)
+        items = align_units_with_whisper_words(units, whisper_words, chunks=chunks)
     if not items:
-        chunks = detect_audio_chunks(mp3_path)
         items = align_units_to_chunks(units, chunks)
 
     # 1. 保存 subtitles.json
