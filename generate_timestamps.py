@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+from difflib import SequenceMatcher
 from pathlib import Path
 
 
@@ -531,6 +532,150 @@ def align_units_to_chunks(units, chunks):
     return [make_item(idx, s, e) for idx, (s, e) in enumerate(aligned)]
 
 
+def try_whisper_word_timestamps(mp3_path: Path):
+    """尝试使用本地免费开源的 mlx_whisper / faster_whisper / openai-whisper 提取每个单词的毫秒级时间戳。
+
+    返回 (words, full_text) 或 (None, None)。
+    words: [{"word": str, "norm": str, "start": float, "end": float}]
+    """
+    # 1. 优先尝试 Apple Silicon 专属加速的 mlx_whisper
+    try:
+        import mlx_whisper  # type: ignore
+
+        print(f"🎙️ 正在使用 Apple Silicon 免费开源 mlx-whisper 识别词级时间戳: {mp3_path.name} ...")
+        res = mlx_whisper.transcribe(
+            str(mp3_path),
+            path_or_hf_repo="mlx-community/whisper-base.en-mlx",
+            word_timestamps=True,
+        )
+        words = []
+        seg_texts = []
+        for seg in res.get("segments", []):
+            if seg.get("text", "").strip():
+                seg_texts.append(seg["text"].strip())
+            for w in seg.get("words", []):
+                norm = re.sub(r"[^a-z0-9]", "", w.get("word", "").lower())
+                if norm:
+                    words.append({
+                        "word": w["word"].strip(),
+                        "norm": norm,
+                        "start": float(w["start"]),
+                        "end": float(w["end"]),
+                    })
+        if words:
+            return words, "\n".join(seg_texts)
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"⚠️ mlx-whisper 运行出错，回退静音对齐: {e}")
+
+    # 2. 尝试 faster_whisper
+    try:
+        from faster_whisper import WhisperModel  # type: ignore
+
+        print(f"🎙️ 正在使用免费开源 faster-whisper 识别词级时间戳: {mp3_path.name} ...")
+        model = WhisperModel("base.en", device="cpu", compute_type="int8")
+        segments, _ = model.transcribe(str(mp3_path), word_timestamps=True)
+        words = []
+        seg_texts = []
+        for seg in segments:
+            if seg.text.strip():
+                seg_texts.append(seg.text.strip())
+            for w in seg.words or []:
+                norm = re.sub(r"[^a-z0-9]", "", w.word.lower())
+                if norm:
+                    words.append({
+                        "word": w.word.strip(),
+                        "norm": norm,
+                        "start": float(w.start),
+                        "end": float(w.end),
+                    })
+        if words:
+            return words, "\n".join(seg_texts)
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"⚠️ faster-whisper 运行出错，回退静音对齐: {e}")
+
+    return None, None
+
+
+def align_units_with_whisper_words(units, whisper_words):
+    """利用 Whisper 识别出的词级时间戳，将每个双语单元精确对齐到对应英文首尾单词的发音时间。"""
+    unit_tokens = []
+    flat_unit_norms = []
+    token_to_unit = []
+
+    for u_idx, u in enumerate(units):
+        raw_words = re.findall(r"[A-Za-z0-9']+", u.get("en", ""))
+        norms = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in raw_words]
+        norms = [n for n in norms if n]
+        unit_tokens.append(norms)
+        for n in norms:
+            flat_unit_norms.append(n)
+            token_to_unit.append(u_idx)
+
+    if not flat_unit_norms or not whisper_words:
+        return None
+
+    whisper_norms = [w["norm"] for w in whisper_words]
+    matcher = SequenceMatcher(None, flat_unit_norms, whisper_norms, autojunk=False)
+
+    # 为每个 flat_unit_norms 索引映射对应的 whisper_words 索引
+    mapped_w_idx = [None] * len(flat_unit_norms)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for offset in range(i2 - i1):
+                mapped_w_idx[i1 + offset] = j1 + offset
+        elif tag == "replace" and (i2 - i1) > 0 and (j2 - j1) > 0:
+            for offset in range(i2 - i1):
+                mapped_j = j1 + int(offset * (j2 - j1) / (i2 - i1))
+                mapped_w_idx[i1 + offset] = min(j2 - 1, mapped_j)
+
+    # 线性插补未直接匹配上的词索引
+    last_valid = 0
+    for idx in range(len(mapped_w_idx)):
+        if mapped_w_idx[idx] is not None:
+            last_valid = mapped_w_idx[idx]
+        else:
+            mapped_w_idx[idx] = last_valid
+
+    # 汇总每个句子的起止词索引
+    unit_word_ranges = [[] for _ in range(len(units))]
+    for tok_idx, u_idx in enumerate(token_to_unit):
+        unit_word_ranges[u_idx].append(mapped_w_idx[tok_idx])
+
+    items = []
+    prev_end = 0.0
+    for idx, u in enumerate(units):
+        w_indices = unit_word_ranges[idx]
+        if w_indices:
+            w_start = min(w_indices)
+            w_end = max(w_indices)
+            start_t = round(whisper_words[w_start]["start"], 2)
+            end_t = round(whisper_words[w_end]["end"], 2)
+            if end_t <= start_t:
+                end_t = round(start_t + 0.4, 2)
+            prev_end = end_t
+        else:
+            start_t = prev_end
+            end_t = round(prev_end + 1.5, 2)
+            prev_end = end_t
+
+        item = {
+            "index": idx + 1,
+            "start": start_t,
+            "end": end_t,
+            "en": u["en"],
+            "zh": u["zh"],
+        }
+        if u.get("warn"):
+            item["warn"] = u["warn"]
+        items.append(item)
+
+    return items
+
+
 def format_srt_time(seconds: float) -> str:
     ms = int(round((seconds - int(seconds)) * 1000))
     total_sec = int(seconds)
@@ -546,8 +691,8 @@ def process_directory(folder: Path, by_newline: bool = False):
         p for p in sorted(list(folder.glob("*.txt")) + list(folder.glob("*.md")))
         if p.name.lower() not in ("subtitles.txt", "readme.md")
     ]
-    if not mp3_files or len(txt_files) < 1:
-        print(f"跳过 {folder}: 未找到 mp3 或 txt/md 文件")
+    if not mp3_files:
+        print(f"跳过 {folder}: 未找到 mp3 文件")
         return
 
     mp3_path = mp3_files[0]
@@ -559,11 +704,28 @@ def process_directory(folder: Path, by_newline: bool = False):
         else:
             en_text = content
 
+    # 优先尝试使用免费开源 Whisper 词级时间戳对齐；若目录连英文 txt 都没有，还能自动转写生成英文 txt
+    whisper_words, whisper_en_text = try_whisper_word_timestamps(mp3_path)
+    if not en_text and whisper_en_text:
+        en_text = whisper_en_text
+        auto_en_path = folder / f"{mp3_path.stem}.txt"
+        auto_en_path.write_text(en_text, encoding="utf-8")
+        print(f"📝 已自动从音频转写生成英文文本: {auto_en_path}")
+
+    if not en_text and not zh_text:
+        print(f"跳过 {folder}: 未找到字幕文本，且未安装 mlx-whisper / faster-whisper")
+        return
+
     en_sents = split_english_sentences(en_text)
     zh_sents = split_chinese_sentences(zh_text)
     units = align_paragraphs_by_newline(en_sents, zh_sents) if by_newline else align_bilingual(en_sents, zh_sents)
-    chunks = detect_audio_chunks(mp3_path)
-    items = align_units_to_chunks(units, chunks)
+
+    items = None
+    if whisper_words:
+        items = align_units_with_whisper_words(units, whisper_words)
+    if not items:
+        chunks = detect_audio_chunks(mp3_path)
+        items = align_units_to_chunks(units, chunks)
 
     # 1. 保存 subtitles.json
     json_path = folder / "subtitles.json"
