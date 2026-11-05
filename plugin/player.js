@@ -3,6 +3,9 @@ let lessonsMap = new Map(); // folderPath -> { folderPath, name, dirHandle, mp3F
 let currentLessonFolderPath = null;
 let subtitles = []; // [{ index, start, end, en, zh, warn? }]
 let currentUnits = []; // 中英对齐后的单元 [{ en, zh, paraEnd, warn, extraBreaks }]
+let currentEnSents = [];
+let currentZhSents = [];
+let splitMode = "sentence"; // "sentence" (按句，先锁回车段落) | "paragraph" (纯按回车符一段一句)
 let currentIndex = 0;
 let playState = "stopped"; // "stopped" | "playing" | "paused"
 let showEn = true;
@@ -20,6 +23,7 @@ const filesInput = document.getElementById("filesInput");
 const lessonSelectWrap = document.getElementById("lessonSelectWrap");
 const lessonSelect = document.getElementById("lessonSelect");
 const statusBadge = document.getElementById("statusBadge");
+const toggleSplitModeBtn = document.getElementById("toggleSplitModeBtn");
 const toggleStampModeBtn = document.getElementById("toggleStampModeBtn");
 const stampToolbar = document.getElementById("stampToolbar");
 const stampStartBtn = document.getElementById("stampStartBtn");
@@ -184,59 +188,81 @@ function cleanMarkdownLine(rawLine) {
 }
 
 // 按自然句切分英文文本（支持 .txt 与 .md，保护 6.7 等小数点，自动识别 RAZ 常见无标点引导词）
-// 返回 [{ text, line, paraEnd }]，line 为原文件行号（从 1 开始）
+// 返回 [{ text, line, paraId, paraEnd }]，paraId 为按回车符切分的段落序号（从 1 开始）
 function splitEnglishSentences(text) {
   const result = [];
+  let paraId = 0;
   text.split(/\r?\n/).forEach((rawLine, lineIdx) => {
     let line = cleanMarkdownLine(rawLine);
     if (!line) return;
     // 自动在 Focus Question / Math Moment / Be a Scientist / Beyond the Book 后补齐漏掉的句号
-    // （关键词不区分大小写，但后面必须是大写字母开头的新句子）
     line = line.replace(
       /\b([Ff]ocus\s+[Qq]uestion|[Mm]ath\s+[Mm]oment|[Bb]e\s+a\s+[Ss]cientist|[Bb]eyond\s+the\s+[Bb]ook)\s+(?=[A-Z])/g,
       "$1. "
     );
-    const safeLine = line.replace(/(\d)\.(\d)/g, "$1__DOT__$2");
-    const rawParts = safeLine
-      .split(/(?<=[.?!])\s+/)
-      .map((p) => p.replace(/__DOT__/g, ".").trim())
-      .filter(Boolean);
+    // 如果行内出现 Math moment / Beyond the book 等小标题，拆成独立回车段落（与中文分行保持一致）
+    const subParas = line
+      .replace(/(?<=[.?!])\s+(?=(?:[Mm]ath\s+[Mm]oment|[Bb]eyond\s+the\s+[Bb]ook|[Bb]e\s+a\s+[Ss]cientist)\b)/g, "\n")
+      .split("\n");
 
-    // 合并像 "And grow." + "And grow." 这样连续重复的极短句（与中文“并且长啊，长啊，长。”和连读音频保持一致）
-    const parts = [];
-    for (const p of rawParts) {
-      if (parts.length > 0 && p.length <= 12 && p.toLowerCase() === parts[parts.length - 1].toLowerCase()) {
-        parts[parts.length - 1] = `${parts[parts.length - 1]} ${p}`;
-      } else {
-        parts.push(p);
+    for (const subLine of subParas) {
+      const trimmed = subLine.trim();
+      if (!trimmed) continue;
+      paraId += 1;
+      const safeLine = trimmed.replace(/(\d)\.(\d)/g, "$1__DOT__$2");
+      const rawParts = safeLine
+        .split(/(?<=[.?!])\s+/)
+        .map((p) => p.replace(/__DOT__/g, ".").trim())
+        .filter(Boolean);
+
+      // 合并像 "And grow." + "And grow." 这样连续重复的极短句（与中文“并且长啊，长啊，长。”和连读音频保持一致）
+      const parts = [];
+      for (const p of rawParts) {
+        if (parts.length > 0 && p.length <= 12 && p.toLowerCase() === parts[parts.length - 1].toLowerCase()) {
+          parts[parts.length - 1] = `${parts[parts.length - 1]} ${p}`;
+        } else {
+          parts.push(p);
+        }
       }
-    }
 
-    parts.forEach((p, idx) => {
-      result.push({ text: p, line: lineIdx + 1, paraEnd: idx === parts.length - 1 });
-    });
+      parts.forEach((p, idx) => {
+        result.push({ text: p, line: lineIdx + 1, paraId, paraEnd: idx === parts.length - 1 });
+      });
+    }
   });
   return result;
 }
 
 // 按自然句切分中文文本（支持 .txt 与 .md）
-// 返回 [{ text, line, paraEnd }]
+// 注意：普通冒号（如“作者：”）不作为切句符，只有行首的“聚焦问题：”、“数学时刻：”才切分
+// 返回 [{ text, line, paraId, paraEnd }]
 function splitChineseSentences(text) {
   const result = [];
+  let paraId = 0;
   text.split(/\r?\n/).forEach((rawLine, lineIdx) => {
-    const line = cleanMarkdownLine(rawLine);
+    let line = cleanMarkdownLine(rawLine);
     if (!line) return;
-    const matches = line.match(/[^。？！：]+(?:(?:\d+\.\d+)[^。？！：]*)*(?:[。？！：]+|$)/g) || [];
-    const parts = matches.map((m) => m.trim()).filter(Boolean);
+    paraId += 1;
+    line = line.replace(/^(聚焦问题|数学时刻)[：:]\s*/, "$1：|");
+    const parts = [];
+    for (const sub of line.split("|")) {
+      if (!sub.trim()) continue;
+      const matches = sub.match(/[^。？！]+(?:(?:\d+\.\d+)[^。？！]*)*(?:[。？！]+|$)/g) || [];
+      for (const m of matches) {
+        if (m.trim()) parts.push(m.trim());
+      }
+    }
     parts.forEach((p, idx) => {
-      result.push({ text: p, line: lineIdx + 1, paraEnd: idx === parts.length - 1 });
+      result.push({ text: p, line: lineIdx + 1, paraId, paraEnd: idx === parts.length - 1 });
     });
   });
   return result;
 }
 
 function textLen(text) {
-  return text.replace(/\s+/g, "").length;
+  // 去掉括号里的英文原名注释（如（Rhonda Lucas Donald）），避免中文字数被虚高
+  const cleaned = text.replace(/[（(][A-Za-z0-9\s.,'-]+[)）]/g, "");
+  return Math.max(1, cleaned.replace(/\s+/g, "").length);
 }
 
 // 提取文本中的阿拉伯数字（去掉千分位逗号），用作中英对齐的锚点
@@ -368,12 +394,8 @@ const BEAD_TYPES = [
   [0, 1, 6.0]
 ];
 
-// 中英双语句子对齐（类似 Gale-Church 算法）
-// 不再按序号硬配，而是允许 1:1 / 1:2 / 2:1 / 1:3 / 3:1 / 1:0 / 0:1 的组合，
-// 依据中英文长度比例、数字锚点和段落边界打分。某处漏了标点只会让那一处变成 1:2 或 2:1，
-// 不会让后面的句子一路错开。
-// 返回 [{ en, zh, paraEnd, warn, extraBreaks }]，warn 非空表示这里中英句数对不上。
-function alignBilingual(enSents, zhSents) {
+// 对单个段落或全局的英中句子列表做动态规划对齐
+function alignBilingualBlock(enSents, zhSents, ratio) {
   if (zhSents.length === 0) {
     return enSents.map((e) => ({ en: e.text, zh: "", paraEnd: e.paraEnd, warn: "", extraBreaks: 0 }));
   }
@@ -383,7 +405,6 @@ function alignBilingual(enSents, zhSents) {
 
   const enLen = enSents.map((e) => textLen(e.text));
   const zhLen = zhSents.map((z) => textLen(z.text));
-  const ratio = zhLen.reduce((a, b) => a + b, 0) / Math.max(1, enLen.reduce((a, b) => a + b, 0));
   const enNums = enSents.map((e) => extractNumbers(e.text));
   const zhNums = zhSents.map((z) => extractNumbers(z.text));
 
@@ -401,9 +422,9 @@ function alignBilingual(enSents, zhSents) {
     const expected = ratio * le;
     let cost = Math.pow(lz - expected, 2) / (expected + 6.0) + penalty;
 
-    // 一组内跨越了原文的段落（行）边界，说明合并得不太合理
-    for (let k = i0; k < i0 + a - 1; k++) if (enSents[k].paraEnd) cost += 2.0;
-    for (let k = j0; k < j0 + b - 1; k++) if (zhSents[k].paraEnd) cost += 2.0;
+    // 一组内跨越了原文的段落（回车换行）边界，给予高额惩罚
+    for (let k = i0; k < i0 + a - 1; k++) if (enSents[k].paraEnd) cost += 8.0;
+    for (let k = j0; k < j0 + b - 1; k++) if (zhSents[k].paraEnd) cost += 8.0;
 
     // 数字锚点：两边出现的数字应该落在同一组里
     const en = new Set();
@@ -418,7 +439,7 @@ function alignBilingual(enSents, zhSents) {
     }
 
     // 段落末尾应该同时结束
-    if (a && b && enSents[i0 + a - 1].paraEnd !== zhSents[j0 + b - 1].paraEnd) cost += 0.8;
+    if (a && b && enSents[i0 + a - 1].paraEnd !== zhSents[j0 + b - 1].paraEnd) cost += 4.0;
     return cost;
   }
 
@@ -509,6 +530,58 @@ function alignBilingual(enSents, zhSents) {
     j -= b;
   }
   units.reverse();
+  return units;
+}
+
+// 中英双语句子对齐（优先按回车符锁定段落边界，段内再按句对齐）
+function alignBilingual(enSents, zhSents) {
+  if (zhSents.length === 0) {
+    return enSents.map((e) => ({ en: e.text, zh: "", paraEnd: e.paraEnd, warn: "", extraBreaks: 0 }));
+  }
+  if (enSents.length === 0) {
+    return zhSents.map((z) => ({ en: "", zh: z.text, paraEnd: z.paraEnd, warn: "", extraBreaks: 0 }));
+  }
+
+  const totalEnLen = enSents.reduce((acc, e) => acc + textLen(e.text), 0);
+  const totalZhLen = zhSents.reduce((acc, z) => acc + textLen(z.text), 0);
+  const ratio = totalZhLen / Math.max(1, totalEnLen);
+
+  const enMaxPara = enSents[enSents.length - 1].paraId || 0;
+  const zhMaxPara = zhSents[zhSents.length - 1].paraId || 0;
+
+  // 当英中非空段落数一致（回车符一一对应）时，严格在每个回车段落内部独立对齐，绝不跨段串行
+  if (enMaxPara > 0 && enMaxPara === zhMaxPara) {
+    const units = [];
+    for (let pid = 1; pid <= enMaxPara; pid++) {
+      const enP = enSents.filter((e) => e.paraId === pid);
+      const zhP = zhSents.filter((z) => z.paraId === pid);
+      units.push(...alignBilingualBlock(enP, zhP, ratio));
+    }
+    return units;
+  }
+
+  return alignBilingualBlock(enSents, zhSents, ratio);
+}
+
+// 纯按回车符（段落）一对一对齐，每一段（绘本每一页）作为一个字幕单元
+function alignParagraphsByNewline(enSents, zhSents) {
+  const maxP = Math.max(
+    enSents.length ? enSents[enSents.length - 1].paraId || 0 : 0,
+    zhSents.length ? zhSents[zhSents.length - 1].paraId || 0 : 0
+  );
+  const units = [];
+  for (let pid = 1; pid <= maxP; pid++) {
+    const ep = enSents.filter((e) => e.paraId === pid).map((e) => e.text);
+    const zp = zhSents.filter((z) => z.paraId === pid).map((z) => z.text);
+    if (!ep.length && !zp.length) continue;
+    units.push({
+      en: ep.join(" "),
+      zh: zp.join(""),
+      paraEnd: true,
+      warn: "",
+      extraBreaks: Math.max(ep.length, zp.length) - 1
+    });
+  }
   return units;
 }
 
@@ -614,7 +687,7 @@ async function autoDetectTimestampsFromAudio(mp3File, units) {
     const extraBreaks = units[i - 1].extraBreaks || 0;
     const expDur = Math.max(0.7, 0.25 + lens[i - 1] * secPerChar * 0.92);
     for (let j = i; j <= M - (N - i); j++) {
-      const kMin = Math.max(i - 1, j - 8);
+      const kMin = Math.max(i - 1, j - 16);
       for (let k = kMin; k < j; k++) {
         if (dp[i - 1][k] >= INF) continue;
         let speechDur = 0;
@@ -629,7 +702,9 @@ async function autoDetectTimestampsFromAudio(mp3File, units) {
         gaps.sort((x, y) => y - x);
         let internalGapCost = 0;
         for (const gap of gaps.slice(extraBreaks)) {
-          if (gap > 0.75) {
+          if (gap > 1.8) {
+            internalGapCost += 40.0 + Math.pow((gap - 0.5) / 0.3, 2) * 2.5;
+          } else if (gap > 0.75) {
             internalGapCost += Math.pow((gap - 0.5) / 0.3, 2) * 2.5;
           } else {
             internalGapCost += Math.pow(gap / 0.6, 2) * 0.5;
@@ -642,8 +717,14 @@ async function autoDetectTimestampsFromAudio(mp3File, units) {
           if (gapAfter < 0.75) {
             boundaryCost += Math.pow((0.75 - gapAfter) / 0.12, 2);
           }
-          if (isParaEnd && gapAfter < 1.1) {
-            boundaryCost += 6.0;
+          if (isParaEnd) {
+            if (gapAfter < 1.1) {
+              boundaryCost += 10.0;
+            } else if (gapAfter >= 1.5) {
+              boundaryCost -= 4.0;
+            }
+          } else if (gapAfter >= 2.0) {
+            boundaryCost += 12.0;
           }
         }
 
@@ -889,15 +970,20 @@ async function loadLesson(folderPath) {
   }
   const enSents = enText ? splitEnglishSentences(enText) : [];
   const zhSents = zhText ? splitChineseSentences(zhText) : [];
-  // 先做中英句子对齐（漏标点只影响局部，并标记出可疑位置）
-  const units = alignBilingual(enSents, zhSents);
+  currentEnSents = enSents;
+  currentZhSents = zhSents;
+  // 按当前切分模式（按句锁回车 / 纯按回车整段）生成对齐单元
+  const units =
+    splitMode === "paragraph"
+      ? alignParagraphsByNewline(enSents, zhSents)
+      : alignBilingual(enSents, zhSents);
   currentUnits = units;
 
   let loadedSubtitles = [];
   let sourceDesc = "";
 
-  // 优先读取 .srt 时间戳文件
-  if (group.srtFiles.length > 0) {
+  // 优先读取 .srt 时间戳文件（仅在默认按句模式或无 txt 时使用现成 srt/json）
+  if (group.srtFiles.length > 0 && (splitMode === "sentence" || units.length === 0)) {
     const srtFile = group.srtFiles[0];
     const srtContent = await srtFile.text();
     loadedSubtitles = parseSrtContent(srtContent);
@@ -906,7 +992,7 @@ async function loadLesson(folderPath) {
       if (!item.en && units[idx]) item.en = units[idx].en;
     });
     sourceDesc = `已加载时间戳文件 ${srtFile.name} (${loadedSubtitles.length} 句)`;
-  } else if (group.jsonFiles.length > 0) {
+  } else if (group.jsonFiles.length > 0 && (splitMode === "sentence" || units.length === 0)) {
     // 其次读取 subtitles.json 时间戳文件
     const jsonFile = group.jsonFiles[0];
     try {
@@ -927,11 +1013,12 @@ async function loadLesson(folderPath) {
     }
   }
 
-  // 如果目录里只有 mp3 + txt，自动分析音频波形生成时间戳
+  // 如果目录里只有 mp3 + txt（或切换到了按回车整段模式），自动分析音频波形生成时间戳
   if (loadedSubtitles.length === 0 && units.length > 0) {
-    statusBadge.textContent = "⏳ 未检测到现成时间戳文件，正在根据音频波形生成时间戳...";
+    statusBadge.textContent = "⏳ 正在根据音频波形与回车段落生成时间戳...";
     loadedSubtitles = await autoDetectTimestampsFromAudio(mp3File, units);
-    sourceDesc = `已从 TXT 自动对齐时间戳 (${loadedSubtitles.length} 句，可点击右侧打时间戳微调并保存)`;
+    const modeLabel = splitMode === "paragraph" ? "按回车整段" : "按句(锁回车)";
+    sourceDesc = `已从 TXT 自动对齐时间戳 [${modeLabel}] (${loadedSubtitles.length} 段/句，可点击右侧打时间戳微调并保存)`;
   }
 
   subtitles = loadedSubtitles;
@@ -942,11 +1029,39 @@ async function loadLesson(folderPath) {
     sourceDesc += `，⚠️ 有 ${warnCount} 处中英句数对不上（已标黄，可能漏了标点）`;
   }
   statusBadge.textContent = sourceDesc || `已加载音频 ${mp3File.name}`;
+  if (toggleSplitModeBtn) {
+    toggleSplitModeBtn.disabled = enSents.length === 0 && zhSents.length === 0;
+  }
   toggleStampModeBtn.disabled = subtitles.length === 0;
   enableTransportControls(subtitles.length > 0);
 
   renderSubtitleList();
   updateStageDisplay();
+}
+
+// 切换“按句(锁回车)”与“按回车(整段)”对齐模式
+if (toggleSplitModeBtn) {
+  toggleSplitModeBtn.addEventListener("click", async () => {
+    if (!currentAudioFile || (currentEnSents.length === 0 && currentZhSents.length === 0)) return;
+    splitMode = splitMode === "sentence" ? "paragraph" : "sentence";
+    toggleSplitModeBtn.textContent =
+      splitMode === "paragraph" ? "📏 切分：按回车(整段)" : "📏 切分：按句(锁回车)";
+    stopPlayback();
+    statusBadge.textContent =
+      splitMode === "paragraph"
+        ? "⏳ 正在切换为「按回车符（整段）」对齐音频..."
+        : "⏳ 正在切换为「按句（先锁回车段）」对齐音频...";
+    currentUnits =
+      splitMode === "paragraph"
+        ? alignParagraphsByNewline(currentEnSents, currentZhSents)
+        : alignBilingual(currentEnSents, currentZhSents);
+    subtitles = await autoDetectTimestampsFromAudio(currentAudioFile, currentUnits);
+    currentIndex = 0;
+    const modeLabel = splitMode === "paragraph" ? "按回车整段" : "按句(锁回车)";
+    statusBadge.textContent = `✅ 已切换为 [${modeLabel}] 对齐 (${subtitles.length} 段/句)`;
+    renderSubtitleList();
+    updateStageDisplay();
+  });
 }
 
 function enableTransportControls(enabled) {

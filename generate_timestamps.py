@@ -31,58 +31,88 @@ def clean_markdown_line(line: str) -> str:
 def split_english_sentences(text: str):
     """按自然句切分英文文本，保护小数点不切分，自动识别 RAZ 常见引导词。
 
-    返回 [{"text", "line", "para_end"}]，line 为原文件行号（从 1 开始）。
+    返回 [{"text", "line", "para_id", "para_end"}]，para_id 为段落编号，line 为原文件行号。
     """
     sents = []
+    para_id = 0
     for line_no, raw_line in enumerate(text.splitlines(), start=1):
         line = clean_markdown_line(raw_line)
         if not line:
             continue
-        # 关键词不区分大小写，但后面必须是大写字母开头的新句子
+        # 将同行末尾连着的 Math moment / Beyond the book 独立成段，以匹配中文的回车分段
         line = re.sub(
-            r"\b([Ff]ocus\s+[Qq]uestion|[Mm]ath\s+[Mm]oment|[Bb]e\s+a\s+[Ss]cientist|[Bb]eyond\s+the\s+[Bb]ook)\s+(?=[A-Z])",
-            r"\1. ",
+            r"\b([Mm]ath\s+[Mm]oment|[Bb]eyond\s+the\s+[Bb]ook)\.?\s+(?=[A-Z])",
+            r"\n\1.\n",
             line,
         )
-        safe_line = re.sub(r"(\d)\.(\d)", r"\1__DOT__\2", line)
-        raw_parts = [
-            p.replace("__DOT__", ".").strip()
-            for p in re.split(r"(?<=[.?!])\s+", safe_line)
-            if p.strip()
-        ]
-        parts = []
-        for p in raw_parts:
-            if parts and len(p) <= 12 and p.lower() == parts[-1].lower():
-                parts[-1] = f"{parts[-1]} {p}"
-            else:
-                parts.append(p)
-        for idx, p in enumerate(parts):
-            sents.append({"text": p, "line": line_no, "para_end": idx == len(parts) - 1})
+        for sub_line in line.splitlines():
+            sub_line = sub_line.strip()
+            if not sub_line:
+                continue
+            para_id += 1
+            sub_line = re.sub(
+                r"\b([Ff]ocus\s+[Qq]uestion|[Mm]ath\s+[Mm]oment|[Bb]e\s+a\s+[Ss]cientist|[Bb]eyond\s+the\s+[Bb]ook)\s+(?=[A-Z])",
+                r"\1. ",
+                sub_line,
+            )
+            safe_line = re.sub(r"(\d)\.(\d)", r"\1__DOT__\2", sub_line)
+            raw_parts = [
+                p.replace("__DOT__", ".").strip()
+                for p in re.split(r"(?<=[.?!])\s+", safe_line)
+                if p.strip()
+            ]
+            parts = []
+            for p in raw_parts:
+                if parts and len(p) <= 12 and p.lower() == parts[-1].lower():
+                    parts[-1] = f"{parts[-1]} {p}"
+                else:
+                    parts.append(p)
+            for idx, p in enumerate(parts):
+                sents.append({
+                    "text": p,
+                    "line": line_no,
+                    "para_id": para_id,
+                    "para_end": idx == len(parts) - 1,
+                })
     return sents
 
 
 def split_chinese_sentences(text: str):
     """按自然句切分中文文本，去除 Markdown 语法符号。
 
-    返回 [{"text", "line", "para_end"}]，line 为原文件行号（从 1 开始）。
+    注意：普通冒号（如“作者：”）不作为切句符，只有行首的“聚焦问题：”、“数学时刻：”才切分。
+    返回 [{"text", "line", "para_id", "para_end"}]。
     """
     sents = []
+    para_id = 0
     for line_no, raw_line in enumerate(text.splitlines(), start=1):
         line = clean_markdown_line(raw_line)
         if not line:
             continue
-        parts = [
-            p.strip()
-            for p in re.findall(r"[^。？！：]+(?:(?:\d+\.\d+)[^。？！：]*)*(?:[。？！：]+|$)", line)
-            if p.strip()
-        ]
+        para_id += 1
+        line = re.sub(r"^(聚焦问题|数学时刻)[：:]\s*", r"\1：|", line)
+        parts = []
+        for sub in line.split("|"):
+            if not sub.strip():
+                continue
+            ms = re.findall(r"[^。？！]+(?:(?:\d+\.\d+)[^。？！]*)*(?:[。？！]+|$)", sub)
+            for m in ms:
+                if m.strip():
+                    parts.append(m.strip())
         for idx, p in enumerate(parts):
-            sents.append({"text": p, "line": line_no, "para_end": idx == len(parts) - 1})
+            sents.append({
+                "text": p,
+                "line": line_no,
+                "para_id": para_id,
+                "para_end": idx == len(parts) - 1,
+            })
     return sents
 
 
 def _text_len(text: str) -> int:
-    return len(re.sub(r"\s+", "", text))
+    # 去掉括号里的英文原名注释（如（Rhonda Lucas Donald）），避免中文字数被虚高
+    cleaned = re.sub(r"[（(][A-Za-z0-9\s.,'-]+[)）]", "", text)
+    return max(1, len(re.sub(r"\s+", "", cleaned)))
 
 
 def _numbers(text: str):
@@ -204,23 +234,21 @@ _BEAD_PENALTY = {
 }
 
 
-def align_bilingual(en_sents, zh_sents):
-    """把英文句子和中文句子做双语对齐（类似 Gale-Church 算法）。
-
-    不再按序号硬配，而是用动态规划允许 1:1 / 1:2 / 2:1 / 1:3 / 3:1 / 1:0 / 0:1 的组合，
-    依据中英文长度比例和段落边界打分。某处漏了标点只会让那一处变成 1:2 或 2:1，
-    不会让后面的句子一路错开。
-
-    返回 [{"en", "zh", "para_end", "warn"}]，warn 非空表示这里中英句数对不上。
-    """
+def _align_bilingual_block(en_sents, zh_sents, ratio):
+    """对单个段落或全局的英中句子列表做动态规划对齐。"""
     if not zh_sents:
-        return [{"en": e["text"], "zh": "", "para_end": e["para_end"], "warn": ""} for e in en_sents]
+        return [
+            {"en": e["text"], "zh": "", "para_end": e["para_end"], "warn": "", "extra_breaks": 0}
+            for e in en_sents
+        ]
     if not en_sents:
-        return [{"en": "", "zh": z["text"], "para_end": z["para_end"], "warn": ""} for z in zh_sents]
+        return [
+            {"en": "", "zh": z["text"], "para_end": z["para_end"], "warn": "", "extra_breaks": 0}
+            for z in zh_sents
+        ]
 
     en_len = [_text_len(e["text"]) for e in en_sents]
     zh_len = [_text_len(z["text"]) for z in zh_sents]
-    ratio = sum(zh_len) / max(1, sum(en_len))  # 每个英文字符大约对应多少中文字符
     en_nums_list = [_numbers(e["text"]) for e in en_sents]
     zh_nums_list = [_numbers(z["text"]) for z in zh_sents]
 
@@ -236,13 +264,13 @@ def align_bilingual(en_sents, zh_sents):
         expected = ratio * le
         cost = (lz - expected) ** 2 / (expected + 6.0)
         cost += _BEAD_PENALTY[(a, b)]
-        # 一组内跨越了原文的段落（行）边界，说明合并得不太合理
+        # 一组内跨越了原文的段落（回车换行）边界，给予高额惩罚
         for k in range(i0, i0 + a - 1):
             if en_sents[k]["para_end"]:
-                cost += 2.0
+                cost += 8.0
         for k in range(j0, j0 + b - 1):
             if zh_sents[k]["para_end"]:
-                cost += 2.0
+                cost += 8.0
         # 数字锚点：两边出现的数字应该落在同一组里
         en_nums = [n for k in range(i0, i0 + a) for n in en_nums_list[k]]
         zh_nums = [n for k in range(j0, j0 + b) for n in zh_nums_list[k]]
@@ -251,7 +279,7 @@ def align_bilingual(en_sents, zh_sents):
             cost += 2.0 * min(unmatched, 3)
         # 段落末尾应该同时结束
         if a and b and en_sents[i0 + a - 1]["para_end"] != zh_sents[j0 + b - 1]["para_end"]:
-            cost += 0.8
+            cost += 4.0
         return cost
 
     for i in range(N + 1):
@@ -322,6 +350,54 @@ def align_bilingual(en_sents, zh_sents):
         })
         i, j = i - a, j - b
     units.reverse()
+    return units
+
+
+def align_bilingual(en_sents, zh_sents):
+    """把英文句子和中文句子做双语对齐（优先按回车符段落锁定，段内再按句对齐）。"""
+    if not zh_sents:
+        return [{"en": e["text"], "zh": "", "para_end": e["para_end"], "warn": "", "extra_breaks": 0} for e in en_sents]
+    if not en_sents:
+        return [{"en": "", "zh": z["text"], "para_end": z["para_end"], "warn": "", "extra_breaks": 0} for z in zh_sents]
+
+    total_en_len = sum(_text_len(e["text"]) for e in en_sents)
+    total_zh_len = sum(_text_len(z["text"]) for z in zh_sents)
+    ratio = total_zh_len / max(1, total_en_len)
+
+    en_max_para = en_sents[-1].get("para_id", 0)
+    zh_max_para = zh_sents[-1].get("para_id", 0)
+
+    # 当英中非空段落数一致（回车符一一对应）时，严格按每个回车段落独立对齐，绝不跨段串行
+    if en_max_para > 0 and en_max_para == zh_max_para:
+        units = []
+        for pid in range(1, en_max_para + 1):
+            en_p = [e for e in en_sents if e.get("para_id") == pid]
+            zh_p = [z for z in zh_sents if z.get("para_id") == pid]
+            units.extend(_align_bilingual_block(en_p, zh_p, ratio))
+        return units
+
+    return _align_bilingual_block(en_sents, zh_sents, ratio)
+
+
+def align_paragraphs_by_newline(en_sents, zh_sents):
+    """直接按回车符（段落）一对一对齐，每一段（绘本每一页）作为一个字幕单元。"""
+    max_p = max(
+        en_sents[-1].get("para_id", 0) if en_sents else 0,
+        zh_sents[-1].get("para_id", 0) if zh_sents else 0,
+    )
+    units = []
+    for pid in range(1, max_p + 1):
+        ep = [e["text"] for e in en_sents if e.get("para_id") == pid]
+        zp = [z["text"] for z in zh_sents if z.get("para_id") == pid]
+        if not ep and not zp:
+            continue
+        units.append({
+            "en": " ".join(ep),
+            "zh": "".join(zp),
+            "para_end": True,
+            "warn": "",
+            "extra_breaks": max(len(ep), len(zp)) - 1,
+        })
     return units
 
 
@@ -405,7 +481,7 @@ def align_units_to_chunks(units, chunks):
         extra_breaks = units[i - 1].get("extra_breaks", 0)
         exp_dur = max(0.7, 0.25 + lens[i - 1] * sec_per_char * 0.92)
         for j in range(i, M - (N - i) + 1):
-            for k in range(max(i - 1, j - 8), j):
+            for k in range(max(i - 1, j - 16), j):
                 if dp[i - 1][k] >= INF:
                     continue
                 speech_dur = sum(chunks[c][1] - chunks[c][0] for c in range(k, j))
@@ -419,7 +495,9 @@ def align_units_to_chunks(units, chunks):
                 internal_gaps = internal_gaps[extra_breaks:]
                 internal_gap_cost = 0.0
                 for gap in internal_gaps:
-                    if gap > 0.75:
+                    if gap > 1.8:
+                        internal_gap_cost += 40.0 + ((gap - 0.5) / 0.3) ** 2 * 2.5
+                    elif gap > 0.75:
                         internal_gap_cost += ((gap - 0.5) / 0.3) ** 2 * 2.5
                     else:
                         internal_gap_cost += (gap / 0.6) ** 2 * 0.5
@@ -429,8 +507,13 @@ def align_units_to_chunks(units, chunks):
                     gap_after = chunks[j][0] - chunks[j - 1][1]
                     if gap_after < 0.75:
                         boundary_cost += ((0.75 - gap_after) / 0.12) ** 2
-                    if is_para_end and gap_after < 1.1:
-                        boundary_cost += 6.0
+                    if is_para_end:
+                        if gap_after < 1.1:
+                            boundary_cost += 10.0
+                        elif gap_after >= 1.5:
+                            boundary_cost -= 4.0
+                    elif gap_after >= 2.0:
+                        boundary_cost += 12.0
 
                 cost = dp[i - 1][k] + dur_cost + internal_gap_cost + boundary_cost
                 if cost < dp[i][j]:
@@ -457,7 +540,7 @@ def format_srt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def process_directory(folder: Path):
+def process_directory(folder: Path, by_newline: bool = False):
     mp3_files = sorted(folder.glob("*.mp3"))
     txt_files = [
         p for p in sorted(list(folder.glob("*.txt")) + list(folder.glob("*.md")))
@@ -478,7 +561,7 @@ def process_directory(folder: Path):
 
     en_sents = split_english_sentences(en_text)
     zh_sents = split_chinese_sentences(zh_text)
-    units = align_bilingual(en_sents, zh_sents)
+    units = align_paragraphs_by_newline(en_sents, zh_sents) if by_newline else align_bilingual(en_sents, zh_sents)
     chunks = detect_audio_chunks(mp3_path)
     items = align_units_to_chunks(units, chunks)
 
@@ -512,10 +595,12 @@ def process_directory(folder: Path):
 
 
 if __name__ == "__main__":
-    target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent / "resources"
+    args = [a for a in sys.argv[1:] if a != "--by-newline"]
+    use_newline = "--by-newline" in sys.argv[1:]
+    target = Path(args[0]) if args else Path(__file__).parent / "resources"
     if target.is_dir():
-        process_directory(target)
+        process_directory(target, by_newline=use_newline)
         for sub in sorted(target.iterdir()):
             if sub.is_dir():
-                process_directory(sub)
+                process_directory(sub, by_newline=use_newline)
 
