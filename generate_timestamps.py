@@ -90,6 +90,108 @@ def _numbers(text: str):
     return re.findall(r"\d+(?:\.\d+)?", re.sub(r"(?<=\d),(?=\d{3})", "", text))
 
 
+
+_NON_END_WORDS = {
+    "a", "an", "the", "of", "in", "on", "at", "to", "for", "with", "by", "from",
+    "into", "under", "over", "through", "after", "before", "between", "and", "or",
+    "but", "so", "as", "if", "than", "that", "this", "these", "those", "my", "your",
+    "his", "her", "its", "our", "their", "some", "many", "few", "more", "most",
+    "very", "too", "not", "no", "can", "will", "may", "might", "must", "should",
+    "would", "could", "is", "are", "was", "were", "be", "been", "have", "has", "had",
+    "do", "does", "did", "keep", "keeps", "help", "helps", "make", "makes", "look",
+    "looks", "feel", "feels", "live", "lives", "eat", "eats", "grow", "grows",
+}
+
+_SENT_STARTERS = {
+    "why", "how", "what", "when", "where", "who", "which",
+    "the", "they", "it", "this", "these", "there", "then", "now", "later", "after",
+    "in", "on", "for", "one", "some", "many", "few", "most", "all",
+}
+
+
+def _auto_split_en_by_zh(en_str: str, zh_list: list) -> list:
+    """当 1 句英文对应多句中文（英文漏了句号）时，根据中文长度比例与英文大写/句首词边界自动补句号拆开。"""
+    if len(zh_list) <= 1:
+        return [en_str]
+    zh_lens = [max(1, _text_len(z)) for z in zh_list]
+    frac = zh_lens[0] / sum(zh_lens)
+    total_len = len(en_str)
+    target_pos = frac * total_len
+
+    best_score = 1e9
+    best_split = None
+
+    for m in re.finditer(r"\s+", en_str):
+        pos, next_pos = m.start(), m.end()
+        if pos < 2 or next_pos >= total_len - 2:
+            continue
+        left_part = en_str[:pos].strip()
+        right_part = en_str[next_pos:].strip()
+        prev_m = re.search(r"([A-Za-z0-9']+)[,;:]*$", left_part)
+        next_m = re.match(r"([A-Za-z0-9']+)", right_part)
+        if not prev_m or not next_m:
+            continue
+        prev_word = prev_m.group(1)
+        next_word = next_m.group(1)
+
+        dist_cost = abs(pos - target_pos) / max(1, total_len)
+        bonus = 0.0
+        if left_part[-1] in ",;:":
+            bonus -= 0.15
+        if next_word[0].isupper():
+            bonus -= 0.45
+        elif next_word.lower() in _SENT_STARTERS:
+            bonus -= 0.25
+        if prev_word.lower() in _NON_END_WORDS:
+            bonus += 0.65
+
+        score = dist_cost + bonus
+        if score < best_score:
+            best_score = score
+            best_split = (left_part, right_part)
+
+    if not best_split:
+        return [en_str]
+
+    left_s, right_s = best_split
+    if left_s[-1] in ",;:":
+        left_s = left_s[:-1] + "."
+    elif left_s[-1] not in ".?!":
+        left_s = left_s + "."
+
+    if right_s and right_s[0].islower():
+        right_s = right_s[0].upper() + right_s[1:]
+
+    rest = _auto_split_en_by_zh(right_s, zh_list[1:])
+    return [left_s] + rest
+
+
+def _auto_split_zh_by_en(zh_str: str, en_list: list) -> list:
+    """当多句英文对应 1 句中文（中文漏了句号或用了逗号连接）时，按英文长度比例在逗号/空格处自动拆开。"""
+    if len(en_list) <= 1:
+        return [zh_str]
+    en_lens = [max(1, _text_len(e)) for e in en_list]
+    frac = en_lens[0] / sum(en_lens)
+    total_len = len(zh_str)
+    target_pos = frac * total_len
+
+    best_score = 1e9
+    best_split = None
+    for m in re.finditer(r"[，,；;\s]+", zh_str):
+        pos, next_pos = m.start(), m.end()
+        if pos < 1 or next_pos >= total_len - 1:
+            continue
+        dist_cost = abs(pos - target_pos) / max(1, total_len)
+        if dist_cost < best_score:
+            best_score = dist_cost
+            best_split = (zh_str[:pos].strip() + "。", zh_str[next_pos:].strip())
+
+    if not best_split:
+        return [zh_str]
+    left_z, right_z = best_split
+    return [left_z] + _auto_split_zh_by_en(right_z, en_list[1:])
+
+
 # 中英句子组合方式及其惩罚：(英文句数, 中文句数) -> 额外代价
 _BEAD_PENALTY = {
     (1, 1): 0.0,
@@ -170,6 +272,37 @@ def align_bilingual(en_sents, zh_sents):
         a, b = back[i][j]
         ens = en_sents[i - a:i]
         zhs = zh_sents[j - b:j]
+
+        # 情况 1: 1 句英文对应多句中文（英文漏了句号） -> 直接自动补句号拆成 b 句
+        if a == 1 and b >= 2:
+            split_ens = _auto_split_en_by_zh(ens[0]["text"], [z["text"] for z in zhs])
+            if len(split_ens) == b:
+                for idx in range(b - 1, -1, -1):
+                    units.append({
+                        "en": split_ens[idx],
+                        "zh": zhs[idx]["text"],
+                        "para_end": ens[0]["para_end"] if idx == b - 1 else False,
+                        "warn": "",
+                        "extra_breaks": 0,
+                    })
+                i, j = i - a, j - b
+                continue
+
+        # 情况 2: 多句英文对应 1 句中文（中文用逗号合句或漏了句号） -> 自动在逗号/空格处拆成 a 句
+        if a >= 2 and b == 1:
+            split_zhs = _auto_split_zh_by_en(zhs[0]["text"], [e["text"] for e in ens])
+            if len(split_zhs) == a:
+                for idx in range(a - 1, -1, -1):
+                    units.append({
+                        "en": ens[idx]["text"],
+                        "zh": split_zhs[idx],
+                        "para_end": ens[idx]["para_end"],
+                        "warn": "",
+                        "extra_breaks": 0,
+                    })
+                i, j = i - a, j - b
+                continue
+
         warn = ""
         if (a, b) != (1, 1):
             en_lines = sorted({e["line"] for e in ens})
@@ -185,7 +318,6 @@ def align_bilingual(en_sents, zh_sents):
             "zh": "".join(z["text"] for z in zhs),
             "para_end": (ens[-1]["para_end"] if ens else zhs[-1]["para_end"]),
             "warn": warn,
-            # 合并单元里很可能藏着真实的句间停顿（比如英文漏了句号），音频对齐时允许这么多个长停顿
             "extra_breaks": max(a, b) - 1,
         })
         i, j = i - a, j - b

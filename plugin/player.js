@@ -244,6 +244,119 @@ function extractNumbers(text) {
   return text.replace(/(?<=\d),(?=\d{3})/g, "").match(/\d+(?:\.\d+)?/g) || [];
 }
 
+const NON_END_WORDS = new Set([
+  "a", "an", "the", "of", "in", "on", "at", "to", "for", "with", "by", "from",
+  "into", "under", "over", "through", "after", "before", "between", "and", "or",
+  "but", "so", "as", "if", "than", "that", "this", "these", "those", "my", "your",
+  "his", "her", "its", "our", "their", "some", "many", "few", "more", "most",
+  "very", "too", "not", "no", "can", "will", "may", "might", "must", "should",
+  "would", "could", "is", "are", "was", "were", "be", "been", "have", "has", "had",
+  "do", "does", "did", "keep", "keeps", "help", "helps", "make", "makes", "look",
+  "looks", "feel", "feels", "live", "lives", "eat", "eats", "grow", "grows"
+]);
+
+const SENT_STARTERS = new Set([
+  "why", "how", "what", "when", "where", "who", "which",
+  "the", "they", "it", "this", "these", "there", "then", "now", "later", "after",
+  "in", "on", "for", "one", "some", "many", "few", "most", "all"
+]);
+
+// 当 1 句英文对应多句中文（英文漏了句号）时，根据中文长度比例与英文大写/句首词边界自动补句号拆开
+function autoSplitEnByZh(enStr, zhList) {
+  if (zhList.length <= 1) return [enStr];
+  const zhLens = zhList.map((z) => Math.max(1, textLen(z)));
+  const totalZh = zhLens.reduce((a, b) => a + b, 0);
+  const frac = zhLens[0] / totalZh;
+  const totalLen = enStr.length;
+  const targetPos = frac * totalLen;
+
+  let bestScore = 1e9;
+  let bestSplit = null;
+
+  const re = /\s+/g;
+  let m;
+  while ((m = re.exec(enStr)) !== null) {
+    const pos = m.index;
+    const nextPos = pos + m[0].length;
+    if (pos < 2 || nextPos >= totalLen - 2) continue;
+
+    const leftPart = enStr.slice(0, pos).trim();
+    const rightPart = enStr.slice(nextPos).trim();
+    const prevM = leftPart.match(/([A-Za-z0-9']+)[,;:]*$/);
+    const nextM = rightPart.match(/^([A-Za-z0-9']+)/);
+    if (!prevM || !nextM) continue;
+
+    const prevWord = prevM[1];
+    const nextWord = nextM[1];
+
+    const distCost = Math.abs(pos - targetPos) / Math.max(1, totalLen);
+    let bonus = 0.0;
+    const lastCh = leftPart[leftPart.length - 1];
+    if (lastCh === "," || lastCh === ";" || lastCh === ":") {
+      bonus -= 0.15;
+    }
+    if (nextWord[0] >= "A" && nextWord[0] <= "Z") {
+      bonus -= 0.45;
+    } else if (SENT_STARTERS.has(nextWord.toLowerCase())) {
+      bonus -= 0.25;
+    }
+    if (NON_END_WORDS.has(prevWord.toLowerCase())) {
+      bonus += 0.65;
+    }
+
+    const score = distCost + bonus;
+    if (score < bestScore) {
+      bestScore = score;
+      bestSplit = [leftPart, rightPart];
+    }
+  }
+
+  if (!bestSplit) return [enStr];
+
+  let [leftS, rightS] = bestSplit;
+  const lastCh = leftS[leftS.length - 1];
+  if (lastCh === "," || lastCh === ";" || lastCh === ":") {
+    leftS = `${leftS.slice(0, -1)}.`;
+  } else if (lastCh !== "." && lastCh !== "?" && lastCh !== "!") {
+    leftS = `${leftS}.`;
+  }
+
+  if (rightS && rightS[0] >= "a" && rightS[0] <= "z") {
+    rightS = rightS[0].toUpperCase() + rightS.slice(1);
+  }
+
+  return [leftS, ...autoSplitEnByZh(rightS, zhList.slice(1))];
+}
+
+// 当多句英文对应 1 句中文（中文用逗号合句或漏了句号）时，按英文长度比例在逗号/空格处自动拆开
+function autoSplitZhByEn(zhStr, enList) {
+  if (enList.length <= 1) return [zhStr];
+  const enLens = enList.map((e) => Math.max(1, textLen(e)));
+  const totalEn = enLens.reduce((a, b) => a + b, 0);
+  const frac = enLens[0] / totalEn;
+  const totalLen = zhStr.length;
+  const targetPos = frac * totalLen;
+
+  let bestScore = 1e9;
+  let bestSplit = null;
+  const re = /[，,；;\s]+/g;
+  let m;
+  while ((m = re.exec(zhStr)) !== null) {
+    const pos = m.index;
+    const nextPos = pos + m[0].length;
+    if (pos < 1 || nextPos >= totalLen - 1) continue;
+    const distCost = Math.abs(pos - targetPos) / Math.max(1, totalLen);
+    if (distCost < bestScore) {
+      bestScore = distCost;
+      bestSplit = [`${zhStr.slice(0, pos).trim()}。`, zhStr.slice(nextPos).trim()];
+    }
+  }
+
+  if (!bestSplit) return [zhStr];
+  const [leftZ, rightZ] = bestSplit;
+  return [leftZ, ...autoSplitZhByEn(rightZ, enList.slice(1))];
+}
+
 // 中英句子组合方式及其惩罚：[英文句数, 中文句数, 额外代价]
 const BEAD_TYPES = [
   [1, 1, 0.0],
@@ -330,6 +443,51 @@ function alignBilingual(enSents, zhSents) {
     const [a, b] = back[i][j];
     const ens = enSents.slice(i - a, i);
     const zhs = zhSents.slice(j - b, j);
+
+    // 情况 1: 1 句英文对应多句中文（英文漏了句号） -> 直接自动补句号拆成 b 句
+    if (a === 1 && b >= 2) {
+      const splitEns = autoSplitEnByZh(
+        ens[0].text,
+        zhs.map((z) => z.text)
+      );
+      if (splitEns.length === b) {
+        for (let idx = b - 1; idx >= 0; idx--) {
+          units.push({
+            en: splitEns[idx],
+            zh: zhs[idx].text,
+            paraEnd: idx === b - 1 ? ens[0].paraEnd : false,
+            warn: "",
+            extraBreaks: 0
+          });
+        }
+        i -= a;
+        j -= b;
+        continue;
+      }
+    }
+
+    // 情况 2: 多句英文对应 1 句中文（中文用逗号合句或漏了句号） -> 自动在逗号/空格处拆成 a 句
+    if (a >= 2 && b === 1) {
+      const splitZhs = autoSplitZhByEn(
+        zhs[0].text,
+        ens.map((e) => e.text)
+      );
+      if (splitZhs.length === a) {
+        for (let idx = a - 1; idx >= 0; idx--) {
+          units.push({
+            en: ens[idx].text,
+            zh: splitZhs[idx],
+            paraEnd: ens[idx].paraEnd,
+            warn: "",
+            extraBreaks: 0
+          });
+        }
+        i -= a;
+        j -= b;
+        continue;
+      }
+    }
+
     let warn = "";
     if (!(a === 1 && b === 1)) {
       const enLines = [...new Set(ens.map((e) => e.line))];
@@ -345,7 +503,6 @@ function alignBilingual(enSents, zhSents) {
       zh: zhs.map((z) => z.text).join(""),
       paraEnd: ens.length ? ens[ens.length - 1].paraEnd : zhs[zhs.length - 1].paraEnd,
       warn,
-      // 合并单元里很可能藏着真实的句间停顿（比如英文漏了句号），音频对齐时允许这么多个长停顿
       extraBreaks: Math.max(a, b) - 1
     });
     i -= a;
