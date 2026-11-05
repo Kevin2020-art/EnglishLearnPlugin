@@ -5,6 +5,7 @@ let subtitles = []; // [{ index, start, end, en, zh, warn? }]
 let currentUnits = []; // 中英对齐后的单元 [{ en, zh, paraEnd, warn, extraBreaks }]
 let currentEnSents = [];
 let currentZhSents = [];
+let currentRawTimedItems = []; // Whisper .srt 或带时间戳 .txt 解析出的原始时间轴条目
 let splitMode = "sentence"; // "sentence" (按句，先锁回车段落) | "paragraph" (纯按回车符一段一句)
 let currentIndex = 0;
 let playState = "stopped"; // "stopped" | "playing" | "paused"
@@ -128,16 +129,53 @@ function formatSrtTime(seconds) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
 }
 
-// 解析 SRT 时间字符串 -> 秒
+// 解析时间字符串（支持 00:00:03,020 / 00:03.02 / 0:03 等格式） -> 秒
 function parseSrtTimestamp(ts) {
-  const m = ts.trim().match(/(\d+):(\d+):(\d+)[,.](\d+)/);
-  if (!m) return 0;
-  return (
-    parseInt(m[1], 10) * 3600 +
-    parseInt(m[2], 10) * 60 +
-    parseInt(m[3], 10) +
-    parseInt(m[4].padEnd(3, "0").slice(0, 3), 10) / 1000
-  );
+  const s = ts.trim();
+  const m3 = s.match(/(\d+):(\d+):(\d+)(?:[,.](\d+))?/);
+  if (m3) {
+    return (
+      parseInt(m3[1], 10) * 3600 +
+      parseInt(m3[2], 10) * 60 +
+      parseInt(m3[3], 10) +
+      (m3[4] ? parseInt(m3[4].padEnd(3, "0").slice(0, 3), 10) / 1000 : 0)
+    );
+  }
+  const m2 = s.match(/(\d+):(\d+)(?:[,.](\d+))?/);
+  if (m2) {
+    return (
+      parseInt(m2[1], 10) * 60 +
+      parseInt(m2[2], 10) +
+      (m2[3] ? parseInt(m2[3].padEnd(3, "0").slice(0, 3), 10) / 1000 : 0)
+    );
+  }
+  return 0;
+}
+
+// 解析带时间戳的 Whisper TXT（如 [00:03.02 --> 00:07.26] Text 或 [00:03.02 - 00:07.26] Text）
+function parseTimestampedTxtContent(txt) {
+  const items = [];
+  const lines = txt.split(/\r?\n/);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = line.match(
+      /^\[?\s*(\d+:\d+(?::\d+)?(?:[,.]\d+)?)\s*(?:-->|->|-|—)\s*(\d+:\d+(?::\d+)?(?:[,.]\d+)?)\s*\]?\s*(.+)$/
+    );
+    if (!m) continue;
+    const start = Number(parseSrtTimestamp(m[1]).toFixed(2));
+    const end = Number(parseSrtTimestamp(m[2]).toFixed(2));
+    const text = m[3].trim();
+    if (!text) continue;
+    items.push({
+      index: items.length + 1,
+      start,
+      end,
+      en: isChineseText(text) ? "" : text,
+      zh: isChineseText(text) ? text : ""
+    });
+  }
+  return items;
 }
 
 // 解析标准 .srt 字幕文件
@@ -563,6 +601,147 @@ function alignBilingual(enSents, zhSents) {
   return alignBilingualBlock(enSents, zhSents, ratio);
 }
 
+// 将 Whisper 导出的单语英文 SRT（或带时间戳 TXT）整理并与中文句子智能对齐，100% 保留 Whisper 原生时间戳
+function alignWhisperSrtWithChinese(rawSrtItems, zhSents, mode = "sentence") {
+  if (!rawSrtItems || rawSrtItems.length === 0) return [];
+  const hasZhAlready = rawSrtItems.some((it) => it.zh && it.zh.trim().length > 0);
+  if (hasZhAlready && mode === "sentence") {
+    return rawSrtItems;
+  }
+
+  // 1. 合并 Whisper 在逗号处拆断的半句（末尾没有 .?! 且与下一块间隔 < 1.8s）
+  const merged = [];
+  for (const item of rawSrtItems) {
+    const prev = merged.length > 0 ? merged[merged.length - 1] : null;
+    if (
+      prev &&
+      !hasZhAlready &&
+      !/[.?!]["'”’)]*$/.test(prev.en.trim()) &&
+      item.start - prev.end < 1.8
+    ) {
+      prev.end = item.end;
+      prev.en = `${prev.en.trim()} ${item.en.trim()}`;
+    } else {
+      merged.push({ ...item });
+    }
+  }
+
+  // 2. 如果是“按回车(整段)”模式，将翻页长停顿（>= 1.5s）之内的句子合并为整段
+  let timedEnBlocks = [];
+  if (mode === "paragraph") {
+    for (let i = 0; i < merged.length; i++) {
+      const cur = merged[i];
+      if (timedEnBlocks.length === 0) {
+        timedEnBlocks.push({ ...cur, paraId: 1, paraEnd: true });
+      } else {
+        const last = timedEnBlocks[timedEnBlocks.length - 1];
+        if (cur.start - last.end < 1.5) {
+          last.end = cur.end;
+          last.en = `${last.en} ${cur.en}`.trim();
+          if (cur.zh) last.zh = `${last.zh}${cur.zh}`;
+        } else {
+          timedEnBlocks.push({
+            ...cur,
+            paraId: timedEnBlocks.length + 1,
+            paraEnd: true
+          });
+        }
+      }
+    }
+    if (hasZhAlready || zhSents.length === 0) {
+      return timedEnBlocks.map((it, idx) => ({ ...it, index: idx + 1 }));
+    }
+    const maxP = timedEnBlocks.length;
+    return timedEnBlocks.map((it, idx) => {
+      const pid = idx + 1;
+      const zp = zhSents.filter((z) => z.paraId === pid).map((z) => z.text);
+      return {
+        index: pid,
+        start: Number(it.start.toFixed(2)),
+        end: Number(it.end.toFixed(2)),
+        en: it.en,
+        zh: zp.join("") || (zhSents[idx] ? zhSents[idx].text : "")
+      };
+    });
+  }
+
+  // 3. 按句模式：如果 Whisper 把同页的两句话合成了一个 SRT 块，按句切开并按字符比例分配该块内部时间戳
+  let paraId = 1;
+  for (let i = 0; i < merged.length; i++) {
+    const blk = merged[i];
+    const nextBlk = i + 1 < merged.length ? merged[i + 1] : null;
+    const isBlockParaEnd = !nextBlk || nextBlk.start - blk.end >= 1.5;
+    const subSents = splitEnglishSentences(blk.en);
+    if (subSents.length <= 1) {
+      timedEnBlocks.push({
+        text: blk.en,
+        line: i + 1,
+        paraId,
+        paraEnd: isBlockParaEnd,
+        start: blk.start,
+        end: blk.end
+      });
+    } else {
+      const totalChars = subSents.reduce((acc, s) => acc + Math.max(1, s.text.length), 0);
+      const totalDur = Math.max(0.1, blk.end - blk.start);
+      let curTime = blk.start;
+      subSents.forEach((s, idx) => {
+        const dur = (totalDur * Math.max(1, s.text.length)) / totalChars;
+        const nextTime = idx === subSents.length - 1 ? blk.end : curTime + dur;
+        timedEnBlocks.push({
+          text: s.text,
+          line: i + 1,
+          paraId,
+          paraEnd: idx === subSents.length - 1 ? isBlockParaEnd : false,
+          start: Number(curTime.toFixed(2)),
+          end: Number(nextTime.toFixed(2))
+        });
+        curTime = nextTime;
+      });
+    }
+    if (isBlockParaEnd) paraId += 1;
+  }
+
+  if (zhSents.length === 0) {
+    return timedEnBlocks.map((b, idx) => ({
+      index: idx + 1,
+      start: b.start,
+      end: b.end,
+      en: b.text,
+      zh: ""
+    }));
+  }
+
+  // 4. 用双语对齐将中文句子挂到带 Whisper 时间戳的英文句子上
+  const alignedUnits = alignBilingual(timedEnBlocks, zhSents);
+  // 若句数完全一致，直接一对一赋上 Whisper 时间戳
+  if (alignedUnits.length === timedEnBlocks.length) {
+    return alignedUnits.map((u, idx) => ({
+      index: idx + 1,
+      start: timedEnBlocks[idx].start,
+      end: timedEnBlocks[idx].end,
+      en: u.en,
+      zh: u.zh,
+      ...(u.warn ? { warn: u.warn } : {})
+    }));
+  }
+  // 若有少量合并/拆分，按顺序映射对应的时间区间
+  return alignedUnits.map((u, idx) => {
+    const mappedIdx = Math.min(
+      timedEnBlocks.length - 1,
+      Math.floor((idx * timedEnBlocks.length) / Math.max(1, alignedUnits.length))
+    );
+    return {
+      index: idx + 1,
+      start: timedEnBlocks[mappedIdx].start,
+      end: timedEnBlocks[mappedIdx].end,
+      en: u.en,
+      zh: u.zh,
+      ...(u.warn ? { warn: u.warn } : {})
+    };
+  });
+}
+
 // 纯按回车符（段落）一对一对齐，每一段（绘本每一页）作为一个字幕单元
 function alignParagraphsByNewline(enSents, zhSents) {
   const maxP = Math.max(
@@ -685,7 +864,7 @@ async function autoDetectTimestampsFromAudio(mp3File, units) {
   for (let i = 1; i <= N; i++) {
     const isParaEnd = units[i - 1].paraEnd;
     const extraBreaks = units[i - 1].extraBreaks || 0;
-    const expDur = Math.max(0.7, 0.25 + lens[i - 1] * secPerChar * 0.92);
+    const expDur = Math.max(0.35, 0.15 + lens[i - 1] * secPerChar * 0.92);
     for (let j = i; j <= M - (N - i); j++) {
       const kMin = Math.max(i - 1, j - 16);
       for (let k = kMin; k < j; k++) {
@@ -972,6 +1151,8 @@ async function loadLesson(folderPath) {
   const zhSents = zhText ? splitChineseSentences(zhText) : [];
   currentEnSents = enSents;
   currentZhSents = zhSents;
+  currentRawTimedItems = [];
+
   // 按当前切分模式（按句锁回车 / 纯按回车整段）生成对齐单元
   const units =
     splitMode === "paragraph"
@@ -982,18 +1163,16 @@ async function loadLesson(folderPath) {
   let loadedSubtitles = [];
   let sourceDesc = "";
 
-  // 优先读取 .srt 时间戳文件（仅在默认按句模式或无 txt 时使用现成 srt/json）
-  if (group.srtFiles.length > 0 && (splitMode === "sentence" || units.length === 0)) {
+  // 1. 优先读取 .srt 时间戳文件（支持双语 subtitles.srt，也支持 Whisper Transcription 直接导出的纯英文 .srt + 中文 .txt）
+  if (group.srtFiles.length > 0) {
     const srtFile = group.srtFiles[0];
     const srtContent = await srtFile.text();
-    loadedSubtitles = parseSrtContent(srtContent);
-    loadedSubtitles.forEach((item, idx) => {
-      if (!item.zh && units[idx]) item.zh = units[idx].zh;
-      if (!item.en && units[idx]) item.en = units[idx].en;
-    });
-    sourceDesc = `已加载时间戳文件 ${srtFile.name} (${loadedSubtitles.length} 句)`;
+    const rawSrt = parseSrtContent(srtContent);
+    currentRawTimedItems = rawSrt;
+    loadedSubtitles = alignWhisperSrtWithChinese(rawSrt, zhSents, splitMode);
+    sourceDesc = `已加载 Whisper/SRT 时间戳 ${srtFile.name} (${loadedSubtitles.length} 句/段)`;
   } else if (group.jsonFiles.length > 0 && (splitMode === "sentence" || units.length === 0)) {
-    // 其次读取 subtitles.json 时间戳文件
+    // 2. 其次读取 subtitles.json 时间戳文件
     const jsonFile = group.jsonFiles[0];
     try {
       const parsed = JSON.parse(await jsonFile.text());
@@ -1011,9 +1190,17 @@ async function loadLesson(folderPath) {
     } catch (err) {
       console.error("解析 JSON 字幕失败:", err);
     }
+  } else if (enText) {
+    // 3. 检查英文 .txt 是否本身带有 Whisper 导出的时间戳（如 [00:03.02 --> 00:07.26] ...）
+    const timedTxtItems = parseTimestampedTxtContent(enText);
+    if (timedTxtItems.length > 0) {
+      currentRawTimedItems = timedTxtItems;
+      loadedSubtitles = alignWhisperSrtWithChinese(timedTxtItems, zhSents, splitMode);
+      sourceDesc = `已从带时间戳的 Whisper TXT 直接加载 (${loadedSubtitles.length} 句/段)`;
+    }
   }
 
-  // 如果目录里只有 mp3 + txt（或切换到了按回车整段模式），自动分析音频波形生成时间戳
+  // 4. 如果目录里只有 mp3 + 纯文本 txt，自动分析音频波形生成时间戳
   if (loadedSubtitles.length === 0 && units.length > 0) {
     statusBadge.textContent = "⏳ 正在根据音频波形与回车段落生成时间戳...";
     loadedSubtitles = await autoDetectTimestampsFromAudio(mp3File, units);
@@ -1030,7 +1217,8 @@ async function loadLesson(folderPath) {
   }
   statusBadge.textContent = sourceDesc || `已加载音频 ${mp3File.name}`;
   if (toggleSplitModeBtn) {
-    toggleSplitModeBtn.disabled = enSents.length === 0 && zhSents.length === 0;
+    toggleSplitModeBtn.disabled =
+      enSents.length === 0 && zhSents.length === 0 && currentRawTimedItems.length === 0;
   }
   toggleStampModeBtn.disabled = subtitles.length === 0;
   enableTransportControls(subtitles.length > 0);
@@ -1042,11 +1230,29 @@ async function loadLesson(folderPath) {
 // 切换“按句(锁回车)”与“按回车(整段)”对齐模式
 if (toggleSplitModeBtn) {
   toggleSplitModeBtn.addEventListener("click", async () => {
-    if (!currentAudioFile || (currentEnSents.length === 0 && currentZhSents.length === 0)) return;
+    if (
+      !currentAudioFile ||
+      (currentEnSents.length === 0 &&
+        currentZhSents.length === 0 &&
+        currentRawTimedItems.length === 0)
+    ) {
+      return;
+    }
     splitMode = splitMode === "sentence" ? "paragraph" : "sentence";
     toggleSplitModeBtn.textContent =
       splitMode === "paragraph" ? "📏 切分：按回车(整段)" : "📏 切分：按句(锁回车)";
     stopPlayback();
+
+    const modeLabel = splitMode === "paragraph" ? "按回车整段" : "按句(锁回车)";
+    if (currentRawTimedItems.length > 0) {
+      subtitles = alignWhisperSrtWithChinese(currentRawTimedItems, currentZhSents, splitMode);
+      currentIndex = 0;
+      statusBadge.textContent = `✅ 已切换为 [${modeLabel}] 对齐 (${subtitles.length} 段/句，使用 Whisper 原生时间戳)`;
+      renderSubtitleList();
+      updateStageDisplay();
+      return;
+    }
+
     statusBadge.textContent =
       splitMode === "paragraph"
         ? "⏳ 正在切换为「按回车符（整段）」对齐音频..."
@@ -1057,7 +1263,6 @@ if (toggleSplitModeBtn) {
         : alignBilingual(currentEnSents, currentZhSents);
     subtitles = await autoDetectTimestampsFromAudio(currentAudioFile, currentUnits);
     currentIndex = 0;
-    const modeLabel = splitMode === "paragraph" ? "按回车整段" : "按句(锁回车)";
     statusBadge.textContent = `✅ 已切换为 [${modeLabel}] 对齐 (${subtitles.length} 段/句)`;
     renderSubtitleList();
     updateStageDisplay();

@@ -479,7 +479,7 @@ def align_units_to_chunks(units, chunks):
     for i in range(1, N + 1):
         is_para_end = units[i - 1]["para_end"]
         extra_breaks = units[i - 1].get("extra_breaks", 0)
-        exp_dur = max(0.7, 0.25 + lens[i - 1] * sec_per_char * 0.92)
+        exp_dur = max(0.35, 0.15 + lens[i - 1] * sec_per_char * 0.92)
         for j in range(i, M - (N - i) + 1):
             for k in range(max(i - 1, j - 16), j):
                 if dp[i - 1][k] >= INF:
