@@ -527,9 +527,9 @@ def align_units_to_chunks(units, chunks):
         prev = parent[i][curr]
         raw_s = chunks[prev][0]
         raw_e = chunks[curr - 1][1]
-        # 前瞻 0.18s 保护声头气流，延展 0.10s 保护弱读尾音
-        padded_s = max(0.0, raw_s - 0.18)
-        padded_e = raw_e + 0.10
+        # 前瞻 0.50s 保护声头气流，延展 0.18s 保护弱读尾音
+        padded_s = max(0.0, raw_s - 0.50)
+        padded_e = raw_e + 0.18
         aligned.append((padded_s, padded_e))
         curr = prev
     aligned.reverse()
@@ -685,25 +685,25 @@ def align_units_with_whisper_words(units, whisper_words, chunks=None):
             end_t = last_w["end"]
 
             # Whisper 词级时间戳 + 句首前瞻保护（Padding）
-            # 增加 0.18s 前瞻，避免爆破音、清辅音（P/T/K/S/F/C等）声头被切掉，同时不侵入上一句末尾
+            # 增加 0.50s 前瞻垫音（同时有 prev_end 保护绝不侵入上一句），彻底保留所有微弱声头/送气音
             raw_start = first_w["start"]
-            padded_start = max(0.0, raw_start - 0.18)
+            padded_start = max(0.0, raw_start - 0.50)
             start_t = max(prev_end, padded_start)
 
-            # 句尾微延展 0.10s，保留轻读尾音（d/t/s等）
-            end_t = last_w["end"] + 0.10
+            # 句尾微延展 0.18s，保留轻读尾音（d/t/s等）
+            end_t = last_w["end"] + 0.18
 
             # 如果 chunks 显示发音段落，且当前句是段落/音频首句，确保不晚于实际开口
             if chunks:
                 for cs, ce in chunks:
-                    if cs <= raw_start + 0.05 and ce > raw_start:
-                        # 句首提前到静音刚刚结束、人声刚开始的瞬间（并留 0.08s 气流缓冲）
-                        onset = max(prev_end, max(0.0, cs - 0.08))
+                    if cs <= raw_start + 0.15 and ce > raw_start:
+                        # 句首提前到静音刚结束、人声刚开始的瞬间（留 0.20s 气流缓冲）
+                        onset = max(prev_end, max(0.0, cs - 0.20))
                         if onset < start_t:
                             start_t = onset
                         break
                 for cs, ce in reversed(chunks):
-                    if last_w["start"] < ce <= end_t + 0.25 and cs < last_w["end"]:
+                    if last_w["start"] < ce <= end_t + 0.35 and cs < last_w["end"]:
                         if ce > end_t:
                             end_t = ce
                         break
