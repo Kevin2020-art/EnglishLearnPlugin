@@ -525,11 +525,25 @@ def align_units_to_chunks(units, chunks):
     curr = M
     for i in range(N, 0, -1):
         prev = parent[i][curr]
-        aligned.append((chunks[prev][0], chunks[curr - 1][1]))
+        raw_s = chunks[prev][0]
+        raw_e = chunks[curr - 1][1]
+        # 前瞻 0.18s 保护声头气流，延展 0.10s 保护弱读尾音
+        padded_s = max(0.0, raw_s - 0.18)
+        padded_e = raw_e + 0.10
+        aligned.append((padded_s, padded_e))
         curr = prev
     aligned.reverse()
 
-    return [make_item(idx, s, e) for idx, (s, e) in enumerate(aligned)]
+    # 边界防重叠保护（防止当前句提前侵入上一句的尾部）
+    sanitized = []
+    last_e = 0.0
+    for s, e in aligned:
+        cur_s = max(last_e, s)
+        cur_e = max(cur_s + 0.35, e)
+        sanitized.append((cur_s, cur_e))
+        last_e = cur_e
+
+    return [make_item(idx, s, e) for idx, (s, e) in enumerate(sanitized)]
 
 
 def try_whisper_word_timestamps(mp3_path: Path):
@@ -670,21 +684,31 @@ def align_units_with_whisper_words(units, whisper_words, chunks=None):
             start_t = first_w["start"]
             end_t = last_w["end"]
 
-            # Whisper 的 DTW 经常把句前的静音算进句首单词的 start 里：
-            # 如果 chunks 显示在 [first_w.start, first_w.end] 之间其实有一段静音结束点 cs，则以真正开口的 cs 为准
+            # Whisper 词级时间戳 + 句首前瞻保护（Padding）
+            # 增加 0.18s 前瞻，避免爆破音、清辅音（P/T/K/S/F/C等）声头被切掉，同时不侵入上一句末尾
+            raw_start = first_w["start"]
+            padded_start = max(0.0, raw_start - 0.18)
+            start_t = max(prev_end, padded_start)
+
+            # 句尾微延展 0.10s，保留轻读尾音（d/t/s等）
+            end_t = last_w["end"] + 0.10
+
+            # 如果 chunks 显示发音段落，且当前句是段落/音频首句，确保不晚于实际开口
             if chunks:
                 for cs, ce in chunks:
-                    if start_t - 0.05 <= cs < first_w["end"] - 0.04 and ce > first_w["start"] + 0.05:
-                        if cs > start_t:
-                            start_t = cs
+                    if cs <= raw_start + 0.05 and ce > raw_start:
+                        # 句首提前到静音刚刚结束、人声刚开始的瞬间（并留 0.08s 气流缓冲）
+                        onset = max(prev_end, max(0.0, cs - 0.08))
+                        if onset < start_t:
+                            start_t = onset
                         break
                 for cs, ce in reversed(chunks):
-                    if last_w["start"] + 0.04 < ce <= end_t + 0.05 and cs < last_w["end"] - 0.05:
-                        if ce < end_t:
+                    if last_w["start"] < ce <= end_t + 0.25 and cs < last_w["end"]:
+                        if ce > end_t:
                             end_t = ce
                         break
 
-            start_t = round(max(prev_end, start_t), 2)
+            start_t = round(start_t, 2)
             end_t = round(end_t, 2)
             if end_t <= start_t:
                 end_t = round(start_t + 0.4, 2)

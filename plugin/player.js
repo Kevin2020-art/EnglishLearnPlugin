@@ -1442,7 +1442,10 @@ function jumpToSentence(idx, autoPlay = true) {
   const targetIdx = Math.max(0, Math.min(subtitles.length - 1, idx));
   currentIndex = targetIdx;
   const targetStart = subtitles[currentIndex].start;
-  audioPlayer.currentTime = targetStart;
+    const prevEnd = idx > 0 ? subtitles[idx - 1].end : 0;
+    // 增加 0.12s 的播放前瞻保护，消除浏览器/手机音频硬件 Seek 淡入造成的吞音
+    const safeStart = Math.max(prevEnd, targetStart - 0.12);
+    audioPlayer.currentTime = safeStart;
   updateStageDisplay(true);
 
   if (autoPlay) {
@@ -1455,7 +1458,9 @@ function jumpToSentence(idx, autoPlay = true) {
 function startOrResumePlayback() {
   if (subtitles.length === 0) return;
   if (playState === "stopped") {
-    audioPlayer.currentTime = subtitles[currentIndex] ? subtitles[currentIndex].start : 0;
+    const s0 = subtitles[currentIndex] ? subtitles[currentIndex].start : 0;
+    const prevEnd = currentIndex > 0 ? subtitles[currentIndex - 1].end : 0;
+    audioPlayer.currentTime = Math.max(prevEnd, s0 - 0.12);
   }
   audioPlayer.play();
   setPlayState("playing");
