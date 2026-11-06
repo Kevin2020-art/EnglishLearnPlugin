@@ -1479,10 +1479,11 @@ function togglePlayPause() {
 
 function stopPlayback() {
   audioPlayer.pause();
-  audioPlayer.currentTime = 0;
   currentIndex = 0;
-  progressBar.value = 0;
-  currentTimeLabel.textContent = "00:00";
+  const firstSentenceStart = subtitles.length > 0 && Number.isFinite(subtitles[0].start) ? subtitles[0].start : 0;
+  audioPlayer.currentTime = firstSentenceStart;
+  progressBar.value = firstSentenceStart;
+  currentTimeLabel.textContent = formatShortTime(firstSentenceStart);
   setPlayState("stopped");
   if (subtitles.length > 0) {
     updateStageDisplay(true);
@@ -1583,17 +1584,24 @@ if (gestureBar) {
 
     // 2. 没有明显滑动，视为短按点击判定
     clickCount += 1;
-    if (clickCount === 1) {
-      clickTimer = setTimeout(() => {
-        // 单击：播放 / 暂停 / 继续
-        togglePlayPause();
-        clickCount = 0;
-      }, 300);
-    } else if (clickCount === 3) {
-      // 快速按3下：停止
+    if (clickTimer) {
       clearTimeout(clickTimer);
+      clickTimer = null;
+    }
+
+    if (clickCount === 3) {
+      // 快速按满 3 下：立即触发停止并停在第一句
       clickCount = 0;
       stopPlayback();
+    } else {
+      // 还没到 3 下，等待 320ms 判断是否还有下一次点击
+      clickTimer = setTimeout(() => {
+        // 单击：播放 / 暂停 / 继续
+        // 如果是双击（按了2下但没到3下），也执行一次常规切换
+        togglePlayPause();
+        clickCount = 0;
+        clickTimer = null;
+      }, 320);
     }
   };
 
