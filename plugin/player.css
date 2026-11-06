@@ -448,37 +448,154 @@ body {
   color: var(--text-secondary);
 }
 
-.main-Transport-buttons {
+/* 一体化手势触控长条 (Capsule Touchpad) */
+.gesture-bar {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  min-width: 380px;
+  max-width: 460px;
+  height: 48px;
+  padding: 0 16px;
+  background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
+  border: 1.5px solid var(--border-color);
+  border-radius: 9999px;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: pan-y; /* 允许纵向滚屏，横向由手势长条接管 */
+  cursor: pointer;
+  overflow: hidden;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.btn-transport {
-  background: #f1f5f9;
-  color: var(--text-main);
-  border-color: #cbd5e1;
-  padding: 8px 15px;
-  font-weight: 600;
-}
-
-.btn-transport:hover:not(:disabled) {
-  background: #e2e8f0;
-}
-
-.btn-play {
-  background: var(--primary);
-  color: #ffffff;
+.gesture-bar:hover:not(.disabled) {
   border-color: var(--primary);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
-.btn-play:hover:not(:disabled) {
-  background: var(--primary-hover);
+.gesture-bar:active:not(.disabled) {
+  transform: scale(0.985);
 }
 
-.btn-stop {
-  color: var(--danger);
+.gesture-bar.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+  background: #f8fafc;
+}
+
+/* 播放中状态：长条呈现柔和的主题色高亮 */
+.gesture-bar.playing {
+  background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15), 0 3px 8px rgba(37, 99, 235, 0.12);
+}
+
+/* 暂停中状态 */
+.gesture-bar.paused {
+  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+  border-color: var(--warning);
+}
+
+/* 核心中央区域（播放/暂停/继续 图标与文字） */
+.gesture-core {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  margin: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  pointer-events: none;
+  transition: transform 0.15s ease-out;
+}
+
+.gesture-action-icon {
+  font-size: 18px;
+  line-height: 1;
+  color: var(--primary);
+  transition: transform 0.15s ease;
+}
+
+.gesture-bar.playing .gesture-action-icon {
+  color: var(--primary-hover);
+}
+
+.gesture-bar.paused .gesture-action-icon {
+  color: #b45309;
+}
+
+.gesture-action-text {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--text-main);
+}
+
+/* 两侧滑动手势指示文案 */
+.gesture-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  opacity: 0.7;
+  pointer-events: none;
+  transition: all 0.15s ease;
+}
+
+.gesture-hint-left {
+  margin-right: auto;
+}
+
+.gesture-hint-right {
+  margin-left: auto;
+}
+
+.gesture-hint .hint-icon {
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+/* 左滑激活中（提示即将跳转上一句） */
+.gesture-bar.swipe-left-active {
+  border-color: var(--primary);
+  background: linear-gradient(90deg, #dbeafe 0%, #f1f5f9 100%);
+}
+
+.gesture-bar.swipe-left-active .gesture-hint-left {
+  opacity: 1;
+  color: var(--primary);
+  transform: translateX(-4px) scale(1.05);
+}
+
+/* 右滑激活中（提示即将跳转下一句） */
+.gesture-bar.swipe-right-active {
+  border-color: var(--primary);
+  background: linear-gradient(90deg, #f1f5f9 0%, #dbeafe 100%);
+}
+
+.gesture-bar.swipe-right-active .gesture-hint-right {
+  opacity: 1;
+  color: var(--primary);
+  transform: translateX(4px) scale(1.05);
+}
+
+/* 三击停止触发的闪烁动画 */
+@keyframes flash-stop {
+  0% { background: #fee2e2; border-color: var(--danger); transform: scale(0.96); }
+  50% { background: #fecaca; border-color: var(--danger); transform: scale(1.02); }
+  100% { background: #ffffff; border-color: var(--border-color); transform: scale(1); }
+}
+
+.gesture-bar.flash-stopped {
+  animation: flash-stop 0.35s ease;
 }
 
 .visibility-buttons {
@@ -593,16 +710,19 @@ body {
     display: none;
   }
 
-  .main-Transport-buttons {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
-    width: 100%;
+  .gesture-bar {
+    min-width: 100%;
+    max-width: 100%;
+    height: 48px;
+    padding: 0 12px;
   }
 
-  .btn-transport {
-    padding: 9px 6px;
-    font-size: 13px;
+  .gesture-action-text {
+    font-size: 14px;
+  }
+
+  .gesture-hint {
+    font-size: 11px;
   }
 
   .visibility-buttons {

@@ -110,14 +110,20 @@
           <span id="playStateText" class="state-text">已停止</span>
         </div>
 
-        <!-- 中间核心播放控制：上一句、播放、暂停、继续、停止、下一句 -->
-        <div class="main-Transport-buttons">
-          <button id="prevBtn" class="btn btn-transport" disabled>⏮ 上一句</button>
-          <button id="playBtn" class="btn btn-transport btn-play" disabled>▶ 播放</button>
-          <button id="pauseBtn" class="btn btn-transport" disabled>⏸ 暂停</button>
-          <button id="resumeBtn" class="btn btn-transport" disabled>⏯ 继续</button>
-          <button id="stopBtn" class="btn btn-transport btn-stop" disabled>⏹ 停止</button>
-          <button id="nextBtn" class="btn btn-transport" disabled>⏭ 下一句</button>
+        <!-- 中间核心播放控制：一体化手势触控长条（短按播放/暂停/继续，左滑放开上一句，右滑放开下一句，快速短按3下停止） -->
+        <div id="gestureBar" class="gesture-bar disabled" role="button" tabindex="0" title="短按：播放/暂停/继续 | 按下左滑放开：上一句 | 按下右滑放开：下一句 | 快速短按3下：停止">
+          <div class="gesture-hint gesture-hint-left">
+            <span class="hint-icon">⏮</span>
+            <span class="hint-text">上一句</span>
+          </div>
+          <div class="gesture-core">
+            <span id="gestureActionIcon" class="gesture-action-icon">▶</span>
+            <span id="gestureActionText" class="gesture-action-text">点击播放</span>
+          </div>
+          <div class="gesture-hint gesture-hint-right">
+            <span class="hint-text">下一句</span>
+            <span class="hint-icon">⏭</span>
+          </div>
         </div>
 
         <!-- 右侧中英文显示/隐藏控制 -->

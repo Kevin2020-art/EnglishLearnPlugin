@@ -47,12 +47,10 @@ const progressBar = document.getElementById("progressBar");
 const playStateDot = document.getElementById("playStateDot");
 const playStateText = document.getElementById("playStateText");
 
-const prevBtn = document.getElementById("prevBtn");
-const playBtn = document.getElementById("playBtn");
-const pauseBtn = document.getElementById("pauseBtn");
-const resumeBtn = document.getElementById("resumeBtn");
-const stopBtn = document.getElementById("stopBtn");
-const nextBtn = document.getElementById("nextBtn");
+// 一体化手势触控长条 DOM
+const gestureBar = document.getElementById("gestureBar");
+const gestureActionIcon = document.getElementById("gestureActionIcon");
+const gestureActionText = document.getElementById("gestureActionText");
 
 const toggleEnBtn = document.getElementById("toggleEnBtn");
 const toggleZhBtn = document.getElementById("toggleZhBtn");
@@ -1271,12 +1269,14 @@ if (toggleSplitModeBtn) {
 
 function enableTransportControls(enabled) {
   progressBar.disabled = !enabled;
-  prevBtn.disabled = !enabled;
-  playBtn.disabled = !enabled;
-  pauseBtn.disabled = !enabled;
-  resumeBtn.disabled = !enabled;
-  stopBtn.disabled = !enabled;
-  nextBtn.disabled = !enabled;
+  if (gestureBar) {
+    gestureBar.classList.toggle("disabled", !enabled);
+    if (!enabled) {
+      gestureBar.classList.remove("playing", "paused");
+      gestureActionIcon.textContent = "▶";
+      gestureActionText.textContent = "未加载课文";
+    }
+  }
 }
 
 // 渲染全文双语字幕列表
@@ -1401,24 +1401,37 @@ function updateStageDisplay(scrollIntoView = true) {
   });
 }
 
-// 更新播放状态指示灯与按钮可用状态
+// 更新播放状态指示灯与长条按键状态
 function setPlayState(newState) {
   playState = newState;
   playStateDot.className = `state-dot ${newState}`;
+
+  if (gestureBar) {
+    gestureBar.classList.remove("playing", "paused");
+  }
+
   if (newState === "playing") {
     playStateText.textContent = "正在播放";
-    pauseBtn.disabled = false;
-    resumeBtn.disabled = true;
+    if (gestureBar) {
+      gestureBar.classList.add("playing");
+      gestureActionIcon.textContent = "⏸";
+      gestureActionText.textContent = "点击暂停";
+    }
     startSyncLoop();
   } else if (newState === "paused") {
     playStateText.textContent = "已暂停";
-    pauseBtn.disabled = true;
-    resumeBtn.disabled = false;
+    if (gestureBar) {
+      gestureBar.classList.add("paused");
+      gestureActionIcon.textContent = "▶";
+      gestureActionText.textContent = "点击继续";
+    }
     stopSyncLoop();
   } else {
     playStateText.textContent = "已停止";
-    pauseBtn.disabled = true;
-    resumeBtn.disabled = true;
+    if (gestureBar) {
+      gestureActionIcon.textContent = "▶";
+      gestureActionText.textContent = "点击播放";
+    }
     stopSyncLoop();
   }
 }
@@ -1438,33 +1451,32 @@ function jumpToSentence(idx, autoPlay = true) {
   }
 }
 
-// 1. 播放按钮
-playBtn.addEventListener("click", () => {
+// 核心播放控制逻辑
+function startOrResumePlayback() {
   if (subtitles.length === 0) return;
   if (playState === "stopped") {
-    audioPlayer.currentTime = subtitles[currentIndex].start;
+    audioPlayer.currentTime = subtitles[currentIndex] ? subtitles[currentIndex].start : 0;
   }
   audioPlayer.play();
   setPlayState("playing");
-});
+}
 
-// 2. 暂停按钮
-pauseBtn.addEventListener("click", () => {
+function pausePlayback() {
   if (!audioPlayer.paused) {
     audioPlayer.pause();
     setPlayState("paused");
   }
-});
+}
 
-// 3. 继续按钮
-resumeBtn.addEventListener("click", () => {
-  if (audioPlayer.paused && subtitles.length > 0) {
-    audioPlayer.play();
-    setPlayState("playing");
+function togglePlayPause() {
+  if (subtitles.length === 0) return;
+  if (audioPlayer.paused) {
+    startOrResumePlayback();
+  } else {
+    pausePlayback();
   }
-});
+}
 
-// 4. 停止按钮
 function stopPlayback() {
   audioPlayer.pause();
   audioPlayer.currentTime = 0;
@@ -1475,23 +1487,131 @@ function stopPlayback() {
   if (subtitles.length > 0) {
     updateStageDisplay(true);
   }
+  // 停止反馈动效
+  if (gestureBar) {
+    gestureBar.classList.add("flash-stopped");
+    setTimeout(() => gestureBar.classList.remove("flash-stopped"), 350);
+  }
 }
 
-stopBtn.addEventListener("click", stopPlayback);
-
-// 5. 上一句按钮
-prevBtn.addEventListener("click", () => {
+function playPrevSentence() {
   if (subtitles.length === 0) return;
   const nextIdx = Math.max(0, currentIndex - 1);
   jumpToSentence(nextIdx, true);
-});
+}
 
-// 6. 下一句按钮
-nextBtn.addEventListener("click", () => {
+function playNextSentence() {
   if (subtitles.length === 0) return;
   const nextIdx = Math.min(subtitles.length - 1, currentIndex + 1);
   jumpToSentence(nextIdx, true);
-});
+}
+
+// ================== 一体化手势长条交互事件 (PointerEvents) ==================
+// 支持：短按（播放/暂停/继续）、按下左滑放开（上一句）、按下右滑放开（下一句）、快速短按3下（停止）
+let gestureStartX = 0;
+let gestureStartY = 0;
+let isPointerDown = false;
+let isSwipeTriggered = false;
+let clickCount = 0;
+let clickTimer = null;
+const SWIPE_THRESHOLD = 32; // 触发切句的横向位移阈值 (px)
+
+if (gestureBar) {
+  const coreEl = gestureBar.querySelector(".gesture-core");
+
+  gestureBar.addEventListener("pointerdown", (e) => {
+    if (gestureBar.classList.contains("disabled")) return;
+    isPointerDown = true;
+    isSwipeTriggered = false;
+    gestureStartX = e.clientX;
+    gestureStartY = e.clientY;
+    gestureBar.setPointerCapture(e.pointerId);
+  });
+
+  gestureBar.addEventListener("pointermove", (e) => {
+    if (!isPointerDown) return;
+    const deltaX = e.clientX - gestureStartX;
+    const deltaY = e.clientY - gestureStartY;
+
+    // 如果主要在纵向滚动，不处理横向手势
+    if (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(deltaX) < 12) {
+      return;
+    }
+
+    // 弹性位移跟手效果
+    const clampedOffset = Math.max(-28, Math.min(28, deltaX * 0.45));
+    if (coreEl) {
+      coreEl.style.transform = `translateX(${clampedOffset}px)`;
+    }
+
+    if (deltaX < -SWIPE_THRESHOLD) {
+      gestureBar.classList.add("swipe-left-active");
+      gestureBar.classList.remove("swipe-right-active");
+    } else if (deltaX > SWIPE_THRESHOLD) {
+      gestureBar.classList.add("swipe-right-active");
+      gestureBar.classList.remove("swipe-left-active");
+    } else {
+      gestureBar.classList.remove("swipe-left-active", "swipe-right-active");
+    }
+  });
+
+  const onPointerEnd = (e) => {
+    if (!isPointerDown) return;
+    isPointerDown = false;
+    const deltaX = e.clientX - gestureStartX;
+
+    // 复位核心位移与激活样式
+    if (coreEl) {
+      coreEl.style.transform = "";
+    }
+    gestureBar.classList.remove("swipe-left-active", "swipe-right-active");
+
+    try {
+      gestureBar.releasePointerCapture(e.pointerId);
+    } catch (_) {}
+
+    // 1. 判断是否触发了滑动手势
+    if (deltaX < -SWIPE_THRESHOLD) {
+      isSwipeTriggered = true;
+      playPrevSentence();
+      return;
+    } else if (deltaX > SWIPE_THRESHOLD) {
+      isSwipeTriggered = true;
+      playNextSentence();
+      return;
+    }
+
+    // 2. 没有明显滑动，视为短按点击判定
+    clickCount += 1;
+    if (clickCount === 1) {
+      clickTimer = setTimeout(() => {
+        // 单击：播放 / 暂停 / 继续
+        togglePlayPause();
+        clickCount = 0;
+      }, 300);
+    } else if (clickCount === 3) {
+      // 快速按3下：停止
+      clearTimeout(clickTimer);
+      clickCount = 0;
+      stopPlayback();
+    }
+  };
+
+  gestureBar.addEventListener("pointerup", onPointerEnd);
+  gestureBar.addEventListener("pointercancel", () => {
+    isPointerDown = false;
+    if (coreEl) coreEl.style.transform = "";
+    gestureBar.classList.remove("swipe-left-active", "swipe-right-active");
+  });
+
+  // 支持键盘回车/空格触发
+  gestureBar.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      togglePlayPause();
+    }
+  });
+}
 
 // 7. 显示/隐藏英文
 toggleEnBtn.addEventListener("click", () => {
@@ -1686,10 +1806,16 @@ document.addEventListener("keydown", (e) => {
     stampCurrentEndAndAdvance();
   } else if (e.key === "ArrowLeft") {
     e.preventDefault();
-    prevBtn.click();
+    playPrevSentence();
   } else if (e.key === "ArrowRight") {
     e.preventDefault();
-    nextBtn.click();
+    playNextSentence();
+  } else if (e.key === " " && !stampMode) {
+    e.preventDefault();
+    togglePlayPause();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    stopPlayback();
   }
 });
 
