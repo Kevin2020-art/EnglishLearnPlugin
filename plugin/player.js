@@ -20,6 +20,7 @@ let currentZhSents = [];
 let currentRawTimedItems = []; // Whisper .srt 或带时间戳 .txt 解析出的原始时间轴条目
 let splitMode = "sentence"; // "sentence" (按句，先锁回车段落) | "paragraph" (纯按回车符一段一句)
 let currentIndex = 0;
+let seekLockIdx = null; // 跳转句子时的前瞻锁定目标，防止 0.5s 垫音期间时间轴误匹配到上一句
 let playState = "stopped"; // "stopped" | "playing" | "paused"
 let showEn = true;
 let showZh = true;
@@ -1350,6 +1351,7 @@ function jumpToSentence(idx, autoPlay = true) {
   if (subtitles.length === 0) return;
   const targetIdx = Math.max(0, Math.min(subtitles.length - 1, idx));
   currentIndex = targetIdx;
+  seekLockIdx = targetIdx; // 锁定当前句，防止垫音期间时间落在上一句区间而被误切回上一句
   const targetStart = subtitles[currentIndex].start;
   const prevEnd = idx > 0 ? subtitles[idx - 1].end : 0;
   // 增加 0.50s 的播放前瞻保护，消除浏览器/手机音频硬件 Seek 淡入造成的吞音
@@ -1370,6 +1372,7 @@ function startOrResumePlayback() {
     const s0 = subtitles[currentIndex] ? subtitles[currentIndex].start : 0;
     const prevEnd = currentIndex > 0 ? subtitles[currentIndex - 1].end : 0;
     audioPlayer.currentTime = Math.max(prevEnd, s0 - 0.50);
+    seekLockIdx = currentIndex;
   }
   audioPlayer.play();
   setPlayState("playing");
@@ -1393,6 +1396,7 @@ function togglePlayPause() {
 
 function stopPlayback() {
   audioPlayer.pause();
+  seekLockIdx = null;
   currentIndex = 0;
   const firstSentenceStart = subtitles.length > 0 && Number.isFinite(subtitles[0].start) ? subtitles[0].start : 0;
   audioPlayer.currentTime = firstSentenceStart;
@@ -1563,6 +1567,7 @@ audioPlayer.addEventListener("loadedmetadata", () => {
 
 progressBar.addEventListener("input", () => {
   const t = parseFloat(progressBar.value);
+  seekLockIdx = null; // 用户手动拖动进度条，解除跳转锁定
   audioPlayer.currentTime = t;
   currentTimeLabel.textContent = formatShortTime(t);
   syncSentenceByTime(t);
@@ -1574,6 +1579,22 @@ audioPlayer.addEventListener("ended", () => {
 
 function syncSentenceByTime(t) {
   if (subtitles.length === 0) return;
+
+  // 如果刚进行了句子跳转，在句首垫音阶段（时间尚未超过本句发音起点 + 0.15s），锁定在目标句，避免误判定为上一句
+  if (seekLockIdx !== null) {
+    const targetSub = subtitles[seekLockIdx];
+    if (targetSub) {
+      if (t < targetSub.start + 0.15) {
+        if (currentIndex !== seekLockIdx) {
+          currentIndex = seekLockIdx;
+          updateStageDisplay(true);
+        }
+        return;
+      }
+    }
+    seekLockIdx = null;
+  }
+
   let matchedIdx = currentIndex;
   for (let i = 0; i < subtitles.length; i++) {
     const s = subtitles[i].start;
