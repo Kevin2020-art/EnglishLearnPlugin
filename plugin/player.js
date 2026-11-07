@@ -1,3 +1,15 @@
+// 全局错误捕获（便于手机端无 Console 时直接在界面提示错误）
+window.addEventListener("error", (e) => {
+  console.error("全局运行时错误:", e);
+  const badge = document.getElementById("statusBadge");
+  if (badge) badge.textContent = `⚠️ 页面脚本异常: ${e.message}`;
+});
+window.addEventListener("unhandledrejection", (e) => {
+  console.error("未捕获的异步异常:", e.reason);
+  const badge = document.getElementById("statusBadge");
+  if (badge) badge.textContent = `⚠️ 异步异常: ${e.reason && e.reason.message ? e.reason.message : e.reason}`;
+});
+
 // 状态管理
 let lessonsMap = new Map(); // folderPath -> { folderPath, name, dirHandle, mp3Files, txtFiles, srtFiles, jsonFiles }
 let currentLessonFolderPath = null;
@@ -1025,41 +1037,46 @@ selectFilesBtn.addEventListener("click", () => {
 });
 
 filesInput.addEventListener("change", async (e) => {
-  const files = Array.from(e.target.files || []);
-  if (files.length === 0) return;
+  try {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
 
-  lessonsMap.clear();
-  const group = {
-    folderPath: "iCloud所选课文",
-    name: "所选课文",
-    dirHandle: null,
-    mp3Files: [],
-    txtFiles: [],
-    srtFiles: [],
-    jsonFiles: []
-  };
+    lessonsMap.clear();
+    const group = {
+      folderPath: "iCloud所选课文",
+      name: "所选课文",
+      dirHandle: null,
+      mp3Files: [],
+      txtFiles: [],
+      srtFiles: [],
+      jsonFiles: []
+    };
 
-  for (const file of files) {
-    const lower = file.name.toLowerCase();
-    if (lower.endsWith(".mp3")) {
-      group.mp3Files.push(file);
-      group.name = file.name.replace(/\.mp3$/i, "");
-    } else if (lower.endsWith(".srt")) {
-      group.srtFiles.push(file);
-    } else if (lower.endsWith(".json")) {
-      group.jsonFiles.push(file);
-    } else if (lower.endsWith(".txt") || (lower.endsWith(".md") && lower !== "readme.md")) {
-      group.txtFiles.push(file);
+    for (const file of files) {
+      const lower = file.name.toLowerCase();
+      if (lower.endsWith(".mp3")) {
+        group.mp3Files.push(file);
+        group.name = file.name.replace(/\.mp3$/i, "");
+      } else if (lower.endsWith(".srt")) {
+        group.srtFiles.push(file);
+      } else if (lower.endsWith(".json")) {
+        group.jsonFiles.push(file);
+      } else if (lower.endsWith(".txt") || (lower.endsWith(".md") && lower !== "readme.md")) {
+        group.txtFiles.push(file);
+      }
     }
-  }
 
-  if (group.mp3Files.length === 0) {
-    statusBadge.textContent = "⚠️ 请同时勾选至少 1 个 .mp3 文件和对应的 .txt/.md 字幕文件";
-    return;
-  }
+    if (group.mp3Files.length === 0) {
+      statusBadge.textContent = "⚠️ 请同时勾选至少 1 个 .mp3 文件和对应的 .srt / .txt 字幕文件";
+      return;
+    }
 
-  lessonsMap.set(group.folderPath, group);
-  await applyScannedLessons();
+    lessonsMap.set(group.folderPath, group);
+    await applyScannedLessons();
+  } catch (err) {
+    console.error("选取文件处理失败:", err);
+    statusBadge.textContent = `⚠️ 加载所选文件失败: ${err.message || err}`;
+  }
 });
 
 // 兼容兜底：传统 input[webkitdirectory]
@@ -1110,105 +1127,110 @@ lessonSelect.addEventListener("change", async () => {
 
 // 加载指定目录的课程
 async function loadLesson(folderPath) {
-  const group = lessonsMap.get(folderPath);
-  if (!group) return;
+  try {
+    const group = lessonsMap.get(folderPath);
+    if (!group) return;
 
-  currentLessonFolderPath = folderPath;
-  stopPlayback();
-  statusBadge.textContent = `正在加载 ${group.name}...`;
+    currentLessonFolderPath = folderPath;
+    stopPlayback();
+    statusBadge.textContent = `正在加载 ${group.name}...`;
 
-  const mp3File = group.mp3Files[0];
-  currentAudioFile = mp3File;
-  if (currentAudioObjectUrl) {
-    URL.revokeObjectURL(currentAudioObjectUrl);
-  }
-  currentAudioObjectUrl = URL.createObjectURL(mp3File);
-  audioPlayer.src = currentAudioObjectUrl;
-
-  // 先读取中英文 txt（备用或补充）
-  let enText = "";
-  let zhText = "";
-  for (const tf of group.txtFiles) {
-    const content = await tf.text();
-    if (isChineseText(content)) {
-      zhText = content;
-    } else {
-      enText = content;
+    const mp3File = group.mp3Files[0];
+    currentAudioFile = mp3File;
+    if (currentAudioObjectUrl) {
+      URL.revokeObjectURL(currentAudioObjectUrl);
     }
-  }
-  const enSents = enText ? splitEnglishSentences(enText) : [];
-  const zhSents = zhText ? splitChineseSentences(zhText) : [];
-  currentEnSents = enSents;
-  currentZhSents = zhSents;
-  currentRawTimedItems = [];
+    currentAudioObjectUrl = URL.createObjectURL(mp3File);
+    audioPlayer.src = currentAudioObjectUrl;
 
-  // 按当前切分模式（按句锁回车 / 纯按回车整段）生成对齐单元
-  const units =
-    splitMode === "paragraph"
-      ? alignParagraphsByNewline(enSents, zhSents)
-      : alignBilingual(enSents, zhSents);
-  currentUnits = units;
-
-  let loadedSubtitles = [];
-  let sourceDesc = "";
-
-  // 1. 优先读取 .srt 时间戳文件（支持双语 subtitles.srt，也支持 Whisper Transcription 直接导出的纯英文 .srt + 中文 .txt）
-  if (group.srtFiles.length > 0) {
-    const srtFile = group.srtFiles[0];
-    const srtContent = await srtFile.text();
-    const rawSrt = parseSrtContent(srtContent);
-    currentRawTimedItems = rawSrt;
-    loadedSubtitles = alignWhisperSrtWithChinese(rawSrt, zhSents, splitMode);
-    sourceDesc = `已加载 Whisper/SRT 时间戳 ${srtFile.name} (${loadedSubtitles.length} 句/段)`;
-  } else if (group.jsonFiles.length > 0 && (splitMode === "sentence" || units.length === 0)) {
-    // 2. 其次读取 subtitles.json 时间戳文件
-    const jsonFile = group.jsonFiles[0];
-    try {
-      const parsed = JSON.parse(await jsonFile.text());
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        loadedSubtitles = parsed.map((it, idx) => ({
-          index: idx + 1,
-          start: Number(it.start) || 0,
-          end: Number(it.end) || 0,
-          en: it.en || (units[idx] ? units[idx].en : ""),
-          zh: it.zh || (units[idx] ? units[idx].zh : ""),
-          ...(it.warn ? { warn: it.warn } : {})
-        }));
-        sourceDesc = `已加载时间戳文件 ${jsonFile.name} (${loadedSubtitles.length} 句)`;
+    // 先读取中英文 txt（备用或补充）
+    let enText = "";
+    let zhText = "";
+    for (const tf of group.txtFiles) {
+      const content = await tf.text();
+      if (isChineseText(content)) {
+        zhText = content;
+      } else {
+        enText = content;
       }
-    } catch (err) {
-      console.error("解析 JSON 字幕失败:", err);
     }
-  } else if (enText) {
-    // 3. 检查英文 .txt 是否本身带有 Whisper 导出的时间戳（如 [00:03.02 --> 00:07.26] ...）
-    const timedTxtItems = parseTimestampedTxtContent(enText);
-    if (timedTxtItems.length > 0) {
-      currentRawTimedItems = timedTxtItems;
-      loadedSubtitles = alignWhisperSrtWithChinese(timedTxtItems, zhSents, splitMode);
-      sourceDesc = `已从带时间戳的 Whisper TXT 直接加载 (${loadedSubtitles.length} 句/段)`;
+    const enSents = enText ? splitEnglishSentences(enText) : [];
+    const zhSents = zhText ? splitChineseSentences(zhText) : [];
+    currentEnSents = enSents;
+    currentZhSents = zhSents;
+    currentRawTimedItems = [];
+
+    // 按当前切分模式（按句锁回车 / 纯按回车整段）生成对齐单元
+    const units =
+      splitMode === "paragraph"
+        ? alignParagraphsByNewline(enSents, zhSents)
+        : alignBilingual(enSents, zhSents);
+    currentUnits = units;
+
+    let loadedSubtitles = [];
+    let sourceDesc = "";
+
+    // 1. 优先读取 .srt 时间戳文件（支持双语 subtitles.srt，也支持 Whisper Transcription 直接导出的纯英文 .srt + 中文 .txt）
+    if (group.srtFiles.length > 0) {
+      const srtFile = group.srtFiles[0];
+      const srtContent = await srtFile.text();
+      const rawSrt = parseSrtContent(srtContent);
+      currentRawTimedItems = rawSrt;
+      loadedSubtitles = alignWhisperSrtWithChinese(rawSrt, zhSents, splitMode);
+      sourceDesc = `已加载 Whisper/SRT 时间戳 ${srtFile.name} (${loadedSubtitles.length} 句/段)`;
+    } else if (group.jsonFiles.length > 0 && (splitMode === "sentence" || units.length === 0)) {
+      // 2. 其次读取 subtitles.json 时间戳文件
+      const jsonFile = group.jsonFiles[0];
+      try {
+        const parsed = JSON.parse(await jsonFile.text());
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          loadedSubtitles = parsed.map((it, idx) => ({
+            index: idx + 1,
+            start: Number(it.start) || 0,
+            end: Number(it.end) || 0,
+            en: it.en || (units[idx] ? units[idx].en : ""),
+            zh: it.zh || (units[idx] ? units[idx].zh : ""),
+            ...(it.warn ? { warn: it.warn } : {})
+          }));
+          sourceDesc = `已加载时间戳文件 ${jsonFile.name} (${loadedSubtitles.length} 句)`;
+        }
+      } catch (err) {
+        console.error("解析 JSON 字幕失败:", err);
+      }
+    } else if (enText) {
+      // 3. 检查英文 .txt 是否本身带有 Whisper 导出的时间戳（如 [00:03.02 --> 00:07.26] ...）
+      const timedTxtItems = parseTimestampedTxtContent(enText);
+      if (timedTxtItems.length > 0) {
+        currentRawTimedItems = timedTxtItems;
+        loadedSubtitles = alignWhisperSrtWithChinese(timedTxtItems, zhSents, splitMode);
+        sourceDesc = `已从带时间戳的 Whisper TXT 直接加载 (${loadedSubtitles.length} 句/段)`;
+      }
     }
+
+    // 4. 如果目录里只有 mp3 + 纯文本 txt，自动分析音频波形生成时间戳
+    if (loadedSubtitles.length === 0 && units.length > 0) {
+      statusBadge.textContent = "⏳ 正在根据音频波形与回车段落生成时间戳...";
+      loadedSubtitles = await autoDetectTimestampsFromAudio(mp3File, units);
+      const modeLabel = splitMode === "paragraph" ? "按回车整段" : "按句(锁回车)";
+      sourceDesc = `已从 TXT 自动对齐时间戳 [${modeLabel}] (${loadedSubtitles.length} 段/句)`;
+    }
+
+    subtitles = loadedSubtitles;
+    currentIndex = 0;
+
+    const warnCount = subtitles.filter((s) => s.warn).length;
+    if (warnCount > 0) {
+      sourceDesc += `，⚠️ 有 ${warnCount} 处中英句数对不上（已标黄，可能漏了标点）`;
+    }
+    statusBadge.textContent = sourceDesc || `已加载音频 ${mp3File.name}`;
+    enableTransportControls(subtitles.length > 0);
+
+    renderSubtitleList();
+    updateStageDisplay();
+  } catch (err) {
+    console.error("加载课文失败:", err);
+    statusBadge.textContent = `⚠️ 加载课文异常: ${err.message || err}`;
   }
-
-  // 4. 如果目录里只有 mp3 + 纯文本 txt，自动分析音频波形生成时间戳
-  if (loadedSubtitles.length === 0 && units.length > 0) {
-    statusBadge.textContent = "⏳ 正在根据音频波形与回车段落生成时间戳...";
-    loadedSubtitles = await autoDetectTimestampsFromAudio(mp3File, units);
-    const modeLabel = splitMode === "paragraph" ? "按回车整段" : "按句(锁回车)";
-    sourceDesc = `已从 TXT 自动对齐时间戳 [${modeLabel}] (${loadedSubtitles.length} 段/句)`;
-  }
-
-  subtitles = loadedSubtitles;
-  currentIndex = 0;
-
-  const warnCount = subtitles.filter((s) => s.warn).length;
-  if (warnCount > 0) {
-    sourceDesc += `，⚠️ 有 ${warnCount} 处中英句数对不上（已标黄，可能漏了标点）`;
-  }
-  statusBadge.textContent = sourceDesc || `已加载音频 ${mp3File.name}`;
-  enableTransportControls(subtitles.length > 0);
-
-  renderSubtitleList();
-  updateStageDisplay();
 }
 
 function enableTransportControls(enabled) {
