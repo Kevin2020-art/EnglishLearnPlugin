@@ -9,7 +9,7 @@
   <link rel="apple-touch-icon" href="icons/icon128.png" />
   <link rel="manifest" href="manifest.webmanifest" />
   <title>英语听力与双语字幕精听播放器</title>
-  <link rel="stylesheet" href="player.css?v=20261107_3" />
+  <link rel="stylesheet" href="player.css?v=20261107_4" />
 </head>
 <body>
   <div class="app-container">
@@ -37,16 +37,6 @@
         <span id="statusBadge" class="status-badge">请选择包含 mp3 和字幕的目录（如 resources）</span>
       </div>
     </header>
-
-    <!-- 当前句焦点展示卡片 -->
-    <section class="current-stage">
-      <div class="stage-meta">
-        <span id="currentSentenceIndex" class="sentence-counter">第 0 / 0 句</span>
-        <span id="currentSentenceTime" class="sentence-time">00:00.00 - 00:00.00</span>
-      </div>
-      <div id="stageEn" class="stage-en">请先点击左上角「选择要播放的目录」加载音频与字幕文件</div>
-      <div id="stageZh" class="stage-zh">支持自动读取目录内的 subtitles.srt / subtitles.json 或中英文 txt 文件</div>
-    </section>
 
     <!-- 全文双语字幕列表 -->
     <main class="subtitle-list-container">
@@ -105,7 +95,7 @@
   </div>
 
   <audio id="audioPlayer" preload="auto"></audio>
-  <script src="player.js?v=20261107_3"></script>
+  <script src="player.js?v=20261107_4"></script>
 </body>
 </html>
 

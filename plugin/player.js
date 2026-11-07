@@ -36,10 +36,6 @@ const lessonSelectWrap = document.getElementById("lessonSelectWrap");
 const lessonSelect = document.getElementById("lessonSelect");
 const statusBadge = document.getElementById("statusBadge");
 
-const currentSentenceIndexEl = document.getElementById("currentSentenceIndex");
-const currentSentenceTimeEl = document.getElementById("currentSentenceTime");
-const stageEn = document.getElementById("stageEn");
-const stageZh = document.getElementById("stageZh");
 const subtitleList = document.getElementById("subtitleList");
 
 const audioPlayer = document.getElementById("audioPlayer");
@@ -1297,22 +1293,9 @@ function renderSubtitleList() {
   });
 }
 
-// 更新顶部当前句大舞台与列表高亮
+// 更新列表高亮与平滑滚动到当前句
 function updateStageDisplay(scrollIntoView = true) {
-  if (subtitles.length === 0) {
-    currentSentenceIndexEl.textContent = "第 0 / 0 句";
-    currentSentenceTimeEl.textContent = "00:00.00 - 00:00.00";
-    return;
-  }
-
-  const cur = subtitles[currentIndex] || subtitles[0];
-  currentSentenceIndexEl.textContent = `第 ${currentIndex + 1} / ${subtitles.length} 句`;
-  currentSentenceTimeEl.textContent = `${formatPreciseTime(cur.start)} - ${formatPreciseTime(cur.end)}`;
-  stageEn.textContent = cur.en || "";
-  stageZh.textContent = cur.zh || "";
-
-  stageEn.classList.toggle("hidden-text", !showEn);
-  stageZh.classList.toggle("hidden-text", !showZh);
+  if (subtitles.length === 0) return;
 
   const rows = subtitleList.querySelectorAll(".subtitle-item");
   rows.forEach((r, idx) => {
@@ -1557,7 +1540,6 @@ toggleEnBtn.addEventListener("click", () => {
   showEn = !showEn;
   toggleEnBtn.textContent = showEn ? "👁️ 隐藏英文" : "👁️ 显示英文";
   toggleEnBtn.classList.toggle("active", showEn);
-  stageEn.classList.toggle("hidden-text", !showEn);
   subtitleList.querySelectorAll(".sub-en").forEach((el) => {
     el.classList.toggle("hidden-text", !showEn);
   });
@@ -1568,7 +1550,6 @@ toggleZhBtn.addEventListener("click", () => {
   showZh = !showZh;
   toggleZhBtn.textContent = showZh ? "👁️ 隐藏中文" : "👁️ 显示中文";
   toggleZhBtn.classList.toggle("active", showZh);
-  stageZh.classList.toggle("hidden-text", !showZh);
   subtitleList.querySelectorAll(".sub-zh").forEach((el) => {
     el.classList.toggle("hidden-text", !showZh);
   });
