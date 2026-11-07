@@ -35,39 +35,8 @@
 
       <div class="top-bar-right">
         <span id="statusBadge" class="status-badge">请选择包含 mp3 和字幕的目录（如 resources）</span>
-        <button id="toggleSplitModeBtn" class="btn btn-outline" disabled title="切换按自然句（先按回车锁段再分句）或纯按回车符（一段一句）对齐">
-          📏 切分：按句(锁回车)
-        </button>
-        <button id="toggleStampModeBtn" class="btn btn-outline" disabled>
-          ⏱️ 打时间戳 / 微调
-        </button>
       </div>
     </header>
-
-    <!-- 打时间戳工具栏（默认折叠，点击“打时间戳 / 微调”展开） -->
-    <section id="stampToolbar" class="stamp-toolbar hidden">
-      <div class="stamp-toolbar-info">
-        <strong>⏱️ 打时间戳模式：</strong>
-        <span>可边播放边点击按钮记录当前句起止时间，或在列表中直接修改每句时间戳，完成后导出保存。</span>
-      </div>
-      <div class="stamp-toolbar-actions">
-        <button id="stampStartBtn" class="btn btn-stamp" title="将当前音频播放时间设为本句开始时间 (快捷键 S)">
-          📍 设为本句起点 (S)
-        </button>
-        <button id="stampEndNextBtn" class="btn btn-stamp" title="将当前音频时间设为本句结束时间并跳到下一句 (快捷键 D)">
-          ✅ 设为本句终点并下一句 (D)
-        </button>
-        <button id="autoAlignBtn" class="btn btn-outline" title="用音频静音检测+句子长度重新自动估算所有时间戳">
-          🪄 自动识别时间戳
-        </button>
-        <button id="exportSrtBtn" class="btn btn-success">
-          💾 导出 subtitles.srt
-        </button>
-        <button id="exportJsonBtn" class="btn btn-outline">
-          💾 导出 subtitles.json
-        </button>
-      </div>
-    </section>
 
     <!-- 当前句焦点展示卡片 -->
     <section class="current-stage">

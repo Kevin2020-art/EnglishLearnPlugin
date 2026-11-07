@@ -11,7 +11,6 @@ let currentIndex = 0;
 let playState = "stopped"; // "stopped" | "playing" | "paused"
 let showEn = true;
 let showZh = true;
-let stampMode = false;
 let currentAudioObjectUrl = null;
 let currentAudioFile = null;
 let rafId = null;
@@ -24,14 +23,6 @@ const filesInput = document.getElementById("filesInput");
 const lessonSelectWrap = document.getElementById("lessonSelectWrap");
 const lessonSelect = document.getElementById("lessonSelect");
 const statusBadge = document.getElementById("statusBadge");
-const toggleSplitModeBtn = document.getElementById("toggleSplitModeBtn");
-const toggleStampModeBtn = document.getElementById("toggleStampModeBtn");
-const stampToolbar = document.getElementById("stampToolbar");
-const stampStartBtn = document.getElementById("stampStartBtn");
-const stampEndNextBtn = document.getElementById("stampEndNextBtn");
-const autoAlignBtn = document.getElementById("autoAlignBtn");
-const exportSrtBtn = document.getElementById("exportSrtBtn");
-const exportJsonBtn = document.getElementById("exportJsonBtn");
 
 const currentSentenceIndexEl = document.getElementById("currentSentenceIndex");
 const currentSentenceTimeEl = document.getElementById("currentSentenceTime");
@@ -1203,7 +1194,7 @@ async function loadLesson(folderPath) {
     statusBadge.textContent = "⏳ 正在根据音频波形与回车段落生成时间戳...";
     loadedSubtitles = await autoDetectTimestampsFromAudio(mp3File, units);
     const modeLabel = splitMode === "paragraph" ? "按回车整段" : "按句(锁回车)";
-    sourceDesc = `已从 TXT 自动对齐时间戳 [${modeLabel}] (${loadedSubtitles.length} 段/句，可点击右侧打时间戳微调并保存)`;
+    sourceDesc = `已从 TXT 自动对齐时间戳 [${modeLabel}] (${loadedSubtitles.length} 段/句)`;
   }
 
   subtitles = loadedSubtitles;
@@ -1214,57 +1205,10 @@ async function loadLesson(folderPath) {
     sourceDesc += `，⚠️ 有 ${warnCount} 处中英句数对不上（已标黄，可能漏了标点）`;
   }
   statusBadge.textContent = sourceDesc || `已加载音频 ${mp3File.name}`;
-  if (toggleSplitModeBtn) {
-    toggleSplitModeBtn.disabled =
-      enSents.length === 0 && zhSents.length === 0 && currentRawTimedItems.length === 0;
-  }
-  toggleStampModeBtn.disabled = subtitles.length === 0;
   enableTransportControls(subtitles.length > 0);
 
   renderSubtitleList();
   updateStageDisplay();
-}
-
-// 切换“按句(锁回车)”与“按回车(整段)”对齐模式
-if (toggleSplitModeBtn) {
-  toggleSplitModeBtn.addEventListener("click", async () => {
-    if (
-      !currentAudioFile ||
-      (currentEnSents.length === 0 &&
-        currentZhSents.length === 0 &&
-        currentRawTimedItems.length === 0)
-    ) {
-      return;
-    }
-    splitMode = splitMode === "sentence" ? "paragraph" : "sentence";
-    toggleSplitModeBtn.textContent =
-      splitMode === "paragraph" ? "📏 切分：按回车(整段)" : "📏 切分：按句(锁回车)";
-    stopPlayback();
-
-    const modeLabel = splitMode === "paragraph" ? "按回车整段" : "按句(锁回车)";
-    if (currentRawTimedItems.length > 0) {
-      subtitles = alignWhisperSrtWithChinese(currentRawTimedItems, currentZhSents, splitMode);
-      currentIndex = 0;
-      statusBadge.textContent = `✅ 已切换为 [${modeLabel}] 对齐 (${subtitles.length} 段/句，使用 Whisper 原生时间戳)`;
-      renderSubtitleList();
-      updateStageDisplay();
-      return;
-    }
-
-    statusBadge.textContent =
-      splitMode === "paragraph"
-        ? "⏳ 正在切换为「按回车符（整段）」对齐音频..."
-        : "⏳ 正在切换为「按句（先锁回车段）」对齐音频...";
-    currentUnits =
-      splitMode === "paragraph"
-        ? alignParagraphsByNewline(currentEnSents, currentZhSents)
-        : alignBilingual(currentEnSents, currentZhSents);
-    subtitles = await autoDetectTimestampsFromAudio(currentAudioFile, currentUnits);
-    currentIndex = 0;
-    statusBadge.textContent = `✅ 已切换为 [${modeLabel}] 对齐 (${subtitles.length} 段/句)`;
-    renderSubtitleList();
-    updateStageDisplay();
-  });
 }
 
 function enableTransportControls(enabled) {
@@ -1323,52 +1267,12 @@ function renderSubtitleList() {
     row.appendChild(indexCol);
     row.appendChild(contentCol);
 
-    if (stampMode) {
-      const stampCol = document.createElement("div");
-      stampCol.className = "sub-stamp-col";
-      stampCol.innerHTML = `
-        <div class="time-input-group">
-          <span>起</span>
-          <input type="number" step="0.05" min="0" class="time-input start-input" value="${item.start.toFixed(2)}" />
-        </div>
-        <div class="time-input-group">
-          <span>止</span>
-          <input type="number" step="0.05" min="0" class="time-input end-input" value="${item.end.toFixed(2)}" />
-        </div>
-      `;
-      stampCol.addEventListener("click", (ev) => ev.stopPropagation());
-
-      const startInput = stampCol.querySelector(".start-input");
-      const endInput = stampCol.querySelector(".end-input");
-
-      startInput.addEventListener("change", () => {
-        item.start = Math.max(0, Number(parseFloat(startInput.value).toFixed(2)) || 0);
-        updateRowTimestampBadge(idx);
-        if (idx === currentIndex) updateStageDisplay();
-      });
-
-      endInput.addEventListener("change", () => {
-        item.end = Math.max(item.start, Number(parseFloat(endInput.value).toFixed(2)) || 0);
-        updateRowTimestampBadge(idx);
-        if (idx === currentIndex) updateStageDisplay();
-      });
-
-      row.appendChild(stampCol);
-    }
-
     row.addEventListener("click", () => {
       jumpToSentence(idx, true);
     });
 
     subtitleList.appendChild(row);
   });
-}
-
-function updateRowTimestampBadge(idx) {
-  const badge = document.getElementById(`time-badge-${idx}`);
-  if (badge && subtitles[idx]) {
-    badge.textContent = `${formatPreciseTime(subtitles[idx].start)} - ${formatPreciseTime(subtitles[idx].end)}`;
-  }
 }
 
 // 更新顶部当前句大舞台与列表高亮
@@ -1704,126 +1608,18 @@ function stopSyncLoop() {
   }
 }
 
-// ================== 打时间戳 / 微调与直接写入文件夹 ==================
-toggleStampModeBtn.addEventListener("click", () => {
-  stampMode = !stampMode;
-  stampToolbar.classList.toggle("hidden", !stampMode);
-  toggleStampModeBtn.textContent = stampMode ? "✖ 关闭打时间戳面板" : "⏱️ 打时间戳 / 微调";
-  renderSubtitleList();
-});
-
-function stampCurrentStart() {
-  if (subtitles.length === 0) return;
-  const now = Number(audioPlayer.currentTime.toFixed(2));
-  subtitles[currentIndex].start = now;
-  if (subtitles[currentIndex].end < now) {
-    subtitles[currentIndex].end = Number((now + 2.0).toFixed(2));
-  }
-  renderSubtitleList();
-  updateStageDisplay(false);
-}
-
-function stampCurrentEndAndAdvance() {
-  if (subtitles.length === 0) return;
-  const now = Number(audioPlayer.currentTime.toFixed(2));
-  subtitles[currentIndex].end = Math.max(subtitles[currentIndex].start, now);
-  if (currentIndex + 1 < subtitles.length) {
-    currentIndex += 1;
-    if (subtitles[currentIndex].start < now) {
-      subtitles[currentIndex].start = now;
-      if (subtitles[currentIndex].end <= now) {
-        subtitles[currentIndex].end = Number((now + 2.5).toFixed(2));
-      }
-    }
-  }
-  renderSubtitleList();
-  updateStageDisplay(true);
-}
-
-stampStartBtn.addEventListener("click", stampCurrentStart);
-stampEndNextBtn.addEventListener("click", stampCurrentEndAndAdvance);
-
-autoAlignBtn.addEventListener("click", async () => {
-  if (!currentAudioFile || subtitles.length === 0) return;
-  statusBadge.textContent = "⏳ 正在重新自动识别时间戳...";
-  // 优先用加载时算好的双语单元（带段落和合并信息），否则从当前字幕重建
-  const units =
-    currentUnits.length === subtitles.length
-      ? currentUnits
-      : subtitles.map((s) => ({ en: s.en, zh: s.zh, paraEnd: false, warn: s.warn || "", extraBreaks: 0 }));
-  subtitles = await autoDetectTimestampsFromAudio(currentAudioFile, units);
-  renderSubtitleList();
-  updateStageDisplay(false);
-  statusBadge.textContent = `✅ 已重新对齐 ${subtitles.length} 句时间戳`;
-});
-
-// 优先直接写入当前课程目录句柄，若无句柄则触发浏览器下载
-async function saveFileToCurrentDirOrDownload(content, filename, mimeType) {
-  const group = currentLessonFolderPath ? lessonsMap.get(currentLessonFolderPath) : null;
-  if (group && group.dirHandle && typeof group.dirHandle.getFileHandle === "function") {
-    try {
-      const fileHandle = await group.dirHandle.getFileHandle(filename, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(content);
-      await writable.close();
-      statusBadge.textContent = `✅ 已直接保存到目录: ${group.name}/${filename}`;
-      return;
-    } catch (err) {
-      console.warn("直接写入目录未成功，改为下载保存:", err);
-    }
-  }
-  downloadTextFile(content, filename, mimeType);
-}
-
-exportSrtBtn.addEventListener("click", async () => {
-  if (subtitles.length === 0) return;
-  const lines = [];
-  subtitles.forEach((item, idx) => {
-    lines.push(String(idx + 1));
-    lines.push(`${formatSrtTime(item.start)} --> ${formatSrtTime(item.end)}`);
-    if (item.en) lines.push(item.en);
-    if (item.zh) lines.push(item.zh);
-    lines.push("");
-  });
-  await saveFileToCurrentDirOrDownload(lines.join("\n"), "subtitles.srt", "text/plain;charset=utf-8");
-});
-
-exportJsonBtn.addEventListener("click", async () => {
-  if (subtitles.length === 0) return;
-  const content = JSON.stringify(subtitles, null, 2);
-  await saveFileToCurrentDirOrDownload(content, "subtitles.json", "application/json;charset=utf-8");
-});
-
-function downloadTextFile(content, filename, mimeType) {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
 // 键盘快捷键支持
 document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   if (subtitles.length === 0) return;
 
-  if (stampMode && (e.key === "s" || e.key === "S")) {
-    e.preventDefault();
-    stampCurrentStart();
-  } else if (stampMode && (e.key === "d" || e.key === "D")) {
-    e.preventDefault();
-    stampCurrentEndAndAdvance();
-  } else if (e.key === "ArrowLeft") {
+  if (e.key === "ArrowLeft") {
     e.preventDefault();
     playPrevSentence();
   } else if (e.key === "ArrowRight") {
     e.preventDefault();
     playNextSentence();
-  } else if (e.key === " " && !stampMode) {
+  } else if (e.key === " ") {
     e.preventDefault();
     togglePlayPause();
   } else if (e.key === "Escape") {
