@@ -802,18 +802,19 @@ async function autoDetectTimestampsFromAudio(mp3File, units) {
     silences.push([silenceStartFrame * 0.01, totalFrames * 0.01]);
   }
 
+  const totalAudioDuration = audioBuffer.duration;
   await audioCtx.close();
 
   const chunks = [];
   if (silences.length === 0) {
-    chunks.push([0, audioBuffer.duration]);
+    chunks.push([0, totalAudioDuration]);
   } else {
     if (silences[0][0] > 0.2) {
       chunks.push([0, Number(silences[0][0].toFixed(2))]);
     }
     for (let i = 0; i < silences.length; i++) {
       const sEnd = silences[i][1];
-      const sNext = i + 1 < silences.length ? silences[i + 1][0] : audioBuffer.duration;
+      const sNext = i + 1 < silences.length ? silences[i + 1][0] : totalAudioDuration;
       if (sNext - sEnd > 0.2) {
         chunks.push([Number(sEnd.toFixed(2)), Number(sNext.toFixed(2))]);
       }
@@ -1346,6 +1347,47 @@ function setPlayState(newState) {
   }
 }
 
+// 安全播放封装，拦截并处理 iOS / 现代浏览器由系统中断或权限拦截导致的 Promise Rejection
+function safePlay() {
+  const p = audioPlayer.play();
+  if (p !== undefined && typeof p.catch === "function") {
+    p.catch((err) => {
+      console.warn("音频播放未成功:", err);
+      if (audioPlayer.error && currentAudioFile) {
+        recoverAudioSourceAndResume(false);
+      } else {
+        setPlayState("paused");
+      }
+    });
+  }
+}
+
+// 后台返回或系统内存回收导致音频源断开时的自动重连恢复机制
+function recoverAudioSourceAndResume(resumePlay = false) {
+  if (!currentAudioFile) return;
+  const savedTime = Number.isFinite(audioPlayer.currentTime) && audioPlayer.currentTime > 0
+    ? audioPlayer.currentTime
+    : (subtitles[currentIndex] ? subtitles[currentIndex].start : 0);
+
+  if (currentAudioObjectUrl) {
+    try { URL.revokeObjectURL(currentAudioObjectUrl); } catch (_) {}
+  }
+  currentAudioObjectUrl = URL.createObjectURL(currentAudioFile);
+  audioPlayer.src = currentAudioObjectUrl;
+
+  const onCanPlay = () => {
+    audioPlayer.removeEventListener("canplay", onCanPlay);
+    try {
+      audioPlayer.currentTime = savedTime;
+    } catch (_) {}
+    if (resumePlay) {
+      safePlay();
+    }
+  };
+  audioPlayer.addEventListener("canplay", onCanPlay);
+  audioPlayer.load();
+}
+
 // 跳转到指定句子
 function jumpToSentence(idx, autoPlay = true) {
   if (subtitles.length === 0) return;
@@ -1360,7 +1402,7 @@ function jumpToSentence(idx, autoPlay = true) {
   updateStageDisplay(true);
 
   if (autoPlay) {
-    audioPlayer.play();
+    safePlay();
     setPlayState("playing");
   }
 }
@@ -1374,7 +1416,7 @@ function startOrResumePlayback() {
     audioPlayer.currentTime = Math.max(prevEnd, s0 - 0.50);
     seekLockIdx = currentIndex;
   }
-  audioPlayer.play();
+  safePlay();
   setPlayState("playing");
 }
 
@@ -1576,6 +1618,63 @@ progressBar.addEventListener("input", () => {
 audioPlayer.addEventListener("ended", () => {
   setPlayState("stopped");
 });
+
+// 监听原生音频播放与暂停事件，保持与 iOS 锁屏/控制中心及系统中断同频
+audioPlayer.addEventListener("play", () => {
+  if (playState !== "playing") {
+    setPlayState("playing");
+  }
+});
+
+audioPlayer.addEventListener("pause", () => {
+  if (playState === "playing") {
+    setPlayState("paused");
+  }
+});
+
+audioPlayer.addEventListener("error", () => {
+  console.warn("audioPlayer 异常:", audioPlayer.error);
+  if (currentAudioFile) {
+    recoverAudioSourceAndResume(false);
+  }
+});
+
+// 前后台切换与页面唤醒自愈机制（解决手机端切出过久后音频资源被 WebKit 释放导致的崩溃或卡死）
+function handleVisibilityOrFocusChange() {
+  if (document.hidden) {
+    // 切换至后台时，停止高频 requestAnimationFrame 动画循环，降低 CPU/GPU 负载，防止被 iOS Jetsam 杀进程
+    stopSyncLoop();
+  } else {
+    // 回到前台时：
+    // 1. 若音频源在后台失效报错，自动恢复 Blob 连接
+    if (audioPlayer.error && currentAudioFile) {
+      recoverAudioSourceAndResume(playState === "playing");
+      return;
+    }
+    // 2. 校准界面状态与底层音频状态
+    if (audioPlayer.paused) {
+      if (playState === "playing") {
+        setPlayState("paused");
+      }
+    } else {
+      if (playState !== "playing") {
+        setPlayState("playing");
+      } else {
+        startSyncLoop();
+      }
+    }
+    // 3. 校准进度条与当前字幕
+    if (Number.isFinite(audioPlayer.currentTime) && audioPlayer.currentTime > 0) {
+      progressBar.value = audioPlayer.currentTime;
+      currentTimeLabel.textContent = formatShortTime(audioPlayer.currentTime);
+      syncSentenceByTime(audioPlayer.currentTime);
+    }
+  }
+}
+
+document.addEventListener("visibilitychange", handleVisibilityOrFocusChange);
+window.addEventListener("pageshow", handleVisibilityOrFocusChange);
+window.addEventListener("focus", handleVisibilityOrFocusChange);
 
 function syncSentenceByTime(t) {
   if (subtitles.length === 0) return;
