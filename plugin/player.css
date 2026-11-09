@@ -489,7 +489,8 @@ body {
 }
 
 .visibility-buttons {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, auto);
   align-items: center;
   gap: 8px;
 }
@@ -504,6 +505,14 @@ body {
   background: var(--primary-light);
   color: var(--primary);
   border-color: var(--primary-border);
+}
+
+.loop-limit-select {
+  appearance: auto;
+  text-align: center;
+  cursor: pointer;
+  outline: none;
+  font-family: inherit;
 }
 
 /* ================== iPhone / 手机竖屏响应式适配 ================== */

@@ -24,6 +24,9 @@ let seekLockIdx = null; // 跳转句子时的前瞻锁定目标，防止 0.5s �
 let playState = "stopped"; // "stopped" | "playing" | "paused"
 let showEn = true;
 let showZh = true;
+let isLooping = false; // 是否开启循环播放（默认否）
+let loopLimit = 0; // 定时/定次停止：0 表示不限次数，2~10 表示播放 N 次后自动停止
+let completedPlayCount = 0; // 当前已完成的整篇播放次数
 let currentAudioObjectUrl = null;
 let currentAudioFile = null;
 let rafId = null;
@@ -54,6 +57,8 @@ const gestureActionText = document.getElementById("gestureActionText");
 
 const toggleEnBtn = document.getElementById("toggleEnBtn");
 const toggleZhBtn = document.getElementById("toggleZhBtn");
+const toggleLoopBtn = document.getElementById("toggleLoopBtn");
+const loopLimitSelect = document.getElementById("loopLimitSelect");
 
 // ================== IndexedDB 记住上次选择的目录句柄 ==================
 const DB_NAME = "EnglishLearnPluginDB";
@@ -1215,6 +1220,8 @@ async function loadLesson(folderPath) {
 
     subtitles = loadedSubtitles;
     currentIndex = 0;
+    completedPlayCount = 0;
+    updateLoopUI();
 
     const warnCount = subtitles.filter((s) => s.warn).length;
     if (warnCount > 0) {
@@ -1440,6 +1447,8 @@ function stopPlayback() {
   audioPlayer.pause();
   seekLockIdx = null;
   currentIndex = 0;
+  completedPlayCount = 0;
+  updateLoopUI();
   const firstSentenceStart = subtitles.length > 0 && Number.isFinite(subtitles[0].start) ? subtitles[0].start : 0;
   audioPlayer.currentTime = firstSentenceStart;
   progressBar.value = firstSentenceStart;
@@ -1601,6 +1610,45 @@ toggleZhBtn.addEventListener("click", () => {
   });
 });
 
+// 9. 循环播放与定次自动停止控制
+function updateLoopUI() {
+  if (toggleLoopBtn) {
+    if (isLooping) {
+      const progressSuffix = loopLimit > 0 && completedPlayCount > 0
+        ? ` (${completedPlayCount}/${loopLimit})`
+        : "";
+      toggleLoopBtn.textContent = `🔁 循环: 是${progressSuffix}`;
+      toggleLoopBtn.classList.add("active");
+    } else {
+      toggleLoopBtn.textContent = "🔁 循环: 否";
+      toggleLoopBtn.classList.remove("active");
+    }
+  }
+  if (loopLimitSelect) {
+    loopLimitSelect.classList.toggle("active", isLooping && loopLimit > 0);
+  }
+}
+
+if (toggleLoopBtn) {
+  toggleLoopBtn.addEventListener("click", () => {
+    isLooping = !isLooping;
+    completedPlayCount = 0;
+    updateLoopUI();
+  });
+}
+
+if (loopLimitSelect) {
+  loopLimitSelect.addEventListener("change", () => {
+    loopLimit = parseInt(loopLimitSelect.value, 10) || 0;
+    completedPlayCount = 0;
+    // 如果选择了具体的停止次数（2~10次），自动开启循环模式，免去多点一次
+    if (loopLimit >= 2 && !isLooping) {
+      isLooping = true;
+    }
+    updateLoopUI();
+  });
+}
+
 // 音频进度条与时间同步
 audioPlayer.addEventListener("loadedmetadata", () => {
   durationLabel.textContent = formatShortTime(audioPlayer.duration);
@@ -1616,7 +1664,30 @@ progressBar.addEventListener("input", () => {
 });
 
 audioPlayer.addEventListener("ended", () => {
-  setPlayState("stopped");
+  if (!isLooping) {
+    stopPlayback();
+    return;
+  }
+
+  completedPlayCount += 1;
+  // 如果设置了定次停止（2~10次）且已达到指定播放次数，则自动停止并复位到第一句
+  if (loopLimit > 0 && completedPlayCount >= loopLimit) {
+    stopPlayback();
+    if (statusBadge) {
+      statusBadge.textContent = `✅ 已完成 ${loopLimit} 次循环播放，自动停止`;
+    }
+    return;
+  }
+
+  // 继续下一轮循环播放
+  updateLoopUI();
+  currentIndex = 0;
+  seekLockIdx = 0;
+  const firstStart = subtitles.length > 0 && Number.isFinite(subtitles[0].start) ? subtitles[0].start : 0;
+  audioPlayer.currentTime = Math.max(0, firstStart - 0.50);
+  updateStageDisplay(true);
+  safePlay();
+  setPlayState("playing");
 });
 
 // 监听原生音频播放与暂停事件，保持与 iOS 锁屏/控制中心及系统中断同频
@@ -1627,6 +1698,8 @@ audioPlayer.addEventListener("play", () => {
 });
 
 audioPlayer.addEventListener("pause", () => {
+  // 自然播放结束触发 ended 前浏览器会先触发 pause，此处忽略 ended 时的 pause，交由 ended 统一处理循环或停止
+  if (audioPlayer.ended) return;
   if (playState === "playing") {
     setPlayState("paused");
   }
