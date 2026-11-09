@@ -121,25 +121,23 @@ resources/
 
 ### 3. 如何制作新课文并生成毫秒级精准时间戳？（推荐工作流）
 
-本工具集成了 Apple Silicon (M 系列芯片) 免费开源的 **`mlx-whisper` 词级语音识别 + 开口波形校准**。首次使用前只需安装一次（永久免费）：
+本工具集成了 Apple Silicon (M 系列芯片) 免费开源的 **`mlx-whisper` 词级语音识别** 与 **`mlx-lm` 本地大模型自动英译中**。首次使用前只需安装一次（永久免费、纯离线）：
 ```bash
-pip3 install mlx-whisper
+/Users/dong/anaconda3/bin/pip install mlx-whisper mlx-lm
 ```
 
-#### 标准三步制作流程（从只有 `.mp3` 开始）
+#### 极简一步制作流程（只需放 1 个 `.mp3` 文件！）
 
-1. **第 1 步（准备音频）**：新建课文文件夹，放入录好的 `xxx.mp3`（如果你已经用其他工具做好了 `英文.txt` 和 `中文.txt`，也可以一起放进去直接跳到第 2 步末尾）。
-2. **第 2 步（一键生成英文字幕 + 毫秒级时间戳）**：
+1. **第 1 步（放入音频）**：新建课文文件夹，只需放入录好的 `xxx.mp3`（无需准备英文 `.txt` 或中文 `.txt`；如果您已有现成的 `.txt` 也可以一起放入）。
+2. **第 2 步（一键转写英文 + 自动翻译中文 + 生成双语毫秒级时间戳）**：
    在终端运行：
    ```bash
    /Users/dong/anaconda3/bin/python3 /Users/dong/myLearn/EnglishLearnPlugin/generate_timestamps.py "你的课文文件夹路径"
    ```
-   - 如果文件夹里只有 `xxx.mp3`，脚本会自动通过 `mlx-whisper` 转写并按绘本翻页停顿分好段落，生成 **`xxx.txt`（纯英文段落文本）** 以及带精准时间戳的 **`subtitles.srt`**。
-   - 如果文件夹里已经有 `xxx.mp3` + `英文.txt` + `中文.txt`，脚本会直接用 `mlx-whisper` 识别每个英文单词的发音起止时间，生成 100% 精准的中英双语 **`subtitles.srt`** 和 **`subtitles.json`**。
-3. **第 3 步（AI 翻译中文并播放）**：
-   拿第 2 步生成的 `xxx.txt` 发给 AI，让 AI 尽量贴近原文逐段翻译成中文，保存为 `中文.txt` 放进同一文件夹：
-   - **直接打开播放器即可播放**：播放器会自动读取第 2 步生成的 `subtitles.srt` 中的精准时间戳，并自动把 `中文.txt` 的中文句子对齐挂载上去！
-   - **或者再跑一次上面的 Python 命令**：即可将中文永久合并写入 `subtitles.srt` 和 `subtitles.json`（方便手机端只选 `mp3 + subtitles.srt` 两个文件播放）。
+   - 脚本会自动完成全部工作：
+     1. 使用 `mlx-whisper` 识别每个英文单词的发音时间，自动按停顿分段生成 **`xxx.txt`（纯英文文本）**；
+     2. 使用 `mlx-lm`（默认调用 `mlx-community/Qwen2.5-3B-Instruct-4bit`）结合全文语境，将英文 **1 对 1 翻译为中文**，自动保存 **`xxx_zh.txt`（纯中文文本）**，天然 100% 句数对齐；
+     3. 直接输出合成好的中英双语 **`subtitles.srt`** 和 **`subtitles.json`**，在电脑或手机端打开播放器即可 0 误差播放！
 
 #### 其他常用命令参数
 ```bash
