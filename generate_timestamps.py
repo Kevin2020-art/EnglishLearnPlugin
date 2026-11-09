@@ -556,10 +556,15 @@ def try_whisper_word_timestamps(mp3_path: Path):
     try:
         import mlx_whisper  # type: ignore
 
-        print(f"🎙️ 正在使用 Apple Silicon 免费开源 mlx-whisper 识别词级时间戳: {mp3_path.name} ...")
+        local_whisper_dir = Path(__file__).parent / "models" / "whisper-base.en-mlx"
+        whisper_repo = (
+            os.environ.get("MLX_WHISPER_MODEL")
+            or (str(local_whisper_dir) if local_whisper_dir.is_dir() else "mlx-community/whisper-base.en-mlx")
+        )
+        print(f"🎙️ 正在使用 Apple Silicon 免费开源 mlx-whisper ({whisper_repo}) 识别词级时间戳: {mp3_path.name} ...")
         res = mlx_whisper.transcribe(
             str(mp3_path),
-            path_or_hf_repo="mlx-community/whisper-base.en-mlx",
+            path_or_hf_repo=whisper_repo,
             word_timestamps=True,
         )
         words = []
@@ -663,7 +668,11 @@ def try_translate_with_mlx_lm(en_sents: list, full_en_text: str):
         print("💡 提示: 未检测到 mlx-lm，跳过自动中文翻译（可运行 `pip install mlx-lm` 开启纯离线自动英译中）")
         return None
 
-    model_repo = os.environ.get("MLX_TRANSLATE_MODEL", "mlx-community/Qwen2.5-3B-Instruct-4bit")
+    local_default_dir = Path(__file__).parent / "models" / "Qwen2.5-3B-Instruct-4bit"
+    model_repo = (
+        os.environ.get("MLX_TRANSLATE_MODEL")
+        or (str(local_default_dir) if local_default_dir.is_dir() else "mlx-community/Qwen2.5-3B-Instruct-4bit")
+    )
     try:
         if _MLX_LM_CACHE is None:
             print(f"🤖 正在加载 Apple Silicon 本地翻译模型 ({model_repo}) ...")
@@ -942,9 +951,22 @@ def process_directory(folder: Path, by_newline: bool = False):
 
 
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if a != "--by-newline"]
-    use_newline = "--by-newline" in sys.argv[1:]
-    raw_path = args[0] if args else str(Path(__file__).parent / "resources")
+    raw_argv = sys.argv[1:]
+    use_newline = "--by-newline" in raw_argv
+    clean_args = []
+    idx = 0
+    while idx < len(raw_argv):
+        arg = raw_argv[idx]
+        if arg == "--by-newline":
+            idx += 1
+        elif arg == "--model" and idx + 1 < len(raw_argv):
+            os.environ["MLX_TRANSLATE_MODEL"] = os.path.expanduser(raw_argv[idx + 1].strip("\"'“”‘’"))
+            idx += 2
+        else:
+            clean_args.append(arg)
+            idx += 1
+
+    raw_path = clean_args[0] if clean_args else str(Path(__file__).parent / "resources")
     # 去除两端可能多余的引号与转义
     raw_path = raw_path.strip("\"'“”‘’")
     target = Path(os.path.expanduser(raw_path)).resolve()
