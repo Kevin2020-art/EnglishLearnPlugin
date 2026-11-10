@@ -13,6 +13,30 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 
+def _patch_httpx_brotli():
+    """修复 Anaconda 旧版 brotli C 扩展不支持 httpx/httpx2 传入 output_buffer_limit 关键字参数的 Bug。"""
+    for mod_name in ("httpx2._decoders", "httpx._decoders"):
+        try:
+            mod = __import__(mod_name, fromlist=["BrotliDecoder"])
+            brotli_cls = getattr(mod, "BrotliDecoder", None)
+            if brotli_cls is not None and not getattr(brotli_cls, "_patched_by_elp", False):
+                orig_init = brotli_cls.__init__
+
+                def _safe_init(self, *args, _orig=orig_init, **kwargs):
+                    _orig(self, *args, **kwargs)
+                    raw_fn = getattr(self, "_decompress", None)
+                    if raw_fn is not None:
+                        self._decompress = lambda data, _f=raw_fn, **kw: _f(data)
+
+                brotli_cls.__init__ = _safe_init
+                brotli_cls._patched_by_elp = True
+        except Exception:
+            pass
+
+
+_patch_httpx_brotli()
+
+
 def is_chinese_text(text: str) -> bool:
     zh_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
     return zh_chars > len(text) * 0.1
@@ -952,6 +976,24 @@ def process_directory(folder: Path, by_newline: bool = False):
 
 if __name__ == "__main__":
     raw_argv = sys.argv[1:]
+    if "--download-model" in raw_argv:
+        dl_idx = raw_argv.index("--download-model")
+        custom_dir = (
+            os.path.expanduser(raw_argv[dl_idx + 1].strip("\"'“”‘’"))
+            if dl_idx + 1 < len(raw_argv) and not raw_argv[dl_idx + 1].startswith("--")
+            else str(Path(__file__).parent / "models" / "Qwen2.5-3B-Instruct-4bit")
+        )
+        from huggingface_hub import snapshot_download  # type: ignore
+
+        print(f"⬇️ 正在下载翻译模型 mlx-community/Qwen2.5-3B-Instruct-4bit 到:\n   {custom_dir}")
+        snapshot_download(
+            repo_id="mlx-community/Qwen2.5-3B-Instruct-4bit",
+            local_dir=custom_dir,
+            max_workers=2,
+        )
+        print(f"✅ 模型下载完成！保存路径: {custom_dir}")
+        sys.exit(0)
+
     use_newline = "--by-newline" in raw_argv
     clean_args = []
     idx = 0
