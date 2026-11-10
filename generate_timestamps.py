@@ -36,12 +36,6 @@ def _patch_httpx_brotli():
 
 _patch_httpx_brotli()
 
-# ================== AI 翻译提示词配置（可直接在此修改您的翻译风格要求） ==================
-TRANSLATE_STYLE_PROMPT = (
-    "请尽量贴近英文原文进行直译，忠实还原原文的词汇含义、句式结构与语序，"
-    "方便英语精听学习者逐词逐句对照理解；不要过度意译、不要自由发挥或无故增删内容。"
-)
-
 
 def is_chinese_text(text: str) -> bool:
     zh_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
@@ -660,120 +654,6 @@ def try_whisper_word_timestamps(mp3_path: Path):
     return None, None
 
 
-_MLX_LM_CACHE = None
-
-
-def _normalize_single_zh_sentence(zh_str: str, en_str: str) -> str:
-    """清理单句中文翻译，确保句内不出现多余的句末标点（。？！），避免后续重跑时被拆成多句。"""
-    s = re.sub(r"^\s*\[\d+\]\s*", "", zh_str.strip())
-    s = re.sub(r"^\s*\d+[\.\、\)\:]\s*", "", s).strip()
-    if not s:
-        return ""
-    # 剥离末尾标点，把句中可能出现的句号/问号/感叹号替换为逗号或分号，保证 1 句英文严格对应 1 句中文
-    end_punct = "。"
-    if en_str.strip().endswith("?"):
-        end_punct = "？"
-    elif en_str.strip().endswith("!"):
-        end_punct = "！"
-    elif s[-1] in "。？！":
-        end_punct = s[-1]
-
-    body = s.rstrip("。？！.?! ")
-    body = re.sub(r"[。？！]+", "，", body)
-    return f"{body}{end_punct}" if body else s
-
-
-def try_translate_with_mlx_lm(en_sents: list, full_en_text: str):
-    """使用 Apple Silicon 原生开源的 mlx-lm + Qwen2.5-3B-Instruct-4bit 将英文句子逐句翻译为中文。
-
-    返回与 en_sents 等长的中文字符串列表 [zh_1, zh_2, ...]；若未安装 mlx-lm 则返回 None。
-    """
-    global _MLX_LM_CACHE
-    if not en_sents:
-        return None
-
-    try:
-        from mlx_lm import generate, load  # type: ignore
-    except ImportError:
-        print("💡 提示: 未检测到 mlx-lm，跳过自动中文翻译（可运行 `pip install mlx-lm` 开启纯离线自动英译中）")
-        return None
-
-    local_default_dir = Path(__file__).parent / "models" / "Qwen2.5-3B-Instruct-4bit"
-    model_repo = (
-        os.environ.get("MLX_TRANSLATE_MODEL")
-        or (str(local_default_dir) if local_default_dir.is_dir() else "mlx-community/Qwen2.5-3B-Instruct-4bit")
-    )
-    try:
-        if _MLX_LM_CACHE is None:
-            print(f"🤖 正在加载 Apple Silicon 本地翻译模型 ({model_repo}) ...")
-            _MLX_LM_CACHE = load(model_repo)
-        model, tokenizer = _MLX_LM_CACHE
-
-        custom_style = os.environ.get("MLX_TRANSLATE_PROMPT", TRANSLATE_STYLE_PROMPT).strip()
-        print(f"🌐 正在使用 mlx-lm 结合全文语境自动翻译 {len(en_sents)} 句英文为中文 ...")
-        numbered_lines = "\n".join(f"[{i + 1}] {s['text']}" for i, s in enumerate(en_sents))
-        system_prompt = (
-            "你是一位专业的英语精听与分级阅读（RAZ）双语对照翻译专家。\n"
-            f"【核心翻译要求】\n{custom_style}\n\n"
-            "【格式硬性规则】\n"
-            "1. 必须严格保留每一行的编号格式 `[序号] 中文译文`，一行对应一句，严禁合并或拆分句子。\n"
-            "2. 每一句译文内部不要使用多个句号（可用逗号连接），确保一行只有一句完整的中文。\n"
-            "3. 只输出带编号的中文译文，不要输出任何解释或多余内容。"
-        )
-        user_prompt = f"【全文背景参考】\n{full_en_text}\n\n【请逐行贴近原文翻译以下句子】\n{numbered_lines}"
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        response = generate(
-            model,
-            tokenizer,
-            prompt=prompt,
-            max_tokens=max(512, len(en_sents) * 60),
-            verbose=False,
-        )
-
-        parsed_map = {}
-        for line in response.splitlines():
-            m = re.match(r"^\s*\[(\d+)\]\s*(.+)$", line.strip())
-            if m:
-                idx = int(m.group(1)) - 1
-                if 0 <= idx < len(en_sents):
-                    parsed_map[idx] = _normalize_single_zh_sentence(m.group(2), en_sents[idx]["text"])
-
-        # 若有少数句子未按编号格式返回，自动单句补翻，确保 100% 完整对齐
-        results = []
-        for idx, s in enumerate(en_sents):
-            zh_item = parsed_map.get(idx, "")
-            if not zh_item:
-                single_msgs = [
-                    {
-                        "role": "system",
-                        "content": f"请结合全文背景，将用户给出的这句英文翻译成一句简体中文。要求：{custom_style} 只输出译文，不要任何解释。",
-                    },
-                    {
-                        "role": "user",
-                        "content": f"全文背景：\n{full_en_text}\n\n待翻译句子：\n{s['text']}",
-                    },
-                ]
-                single_prompt = tokenizer.apply_chat_template(
-                    single_msgs, tokenize=False, add_generation_prompt=True
-                )
-                single_resp = generate(
-                    model, tokenizer, prompt=single_prompt, max_tokens=120, verbose=False
-                ).strip()
-                first_line = single_resp.splitlines()[0] if single_resp else ""
-                zh_item = _normalize_single_zh_sentence(first_line, s["text"])
-            results.append(zh_item)
-
-        return results
-    except Exception as e:
-        print(f"⚠️ mlx-lm 自动翻译出错: {e}")
-        return None
-
-
 def align_units_with_whisper_words(units, whisper_words, chunks=None):
     """利用 Whisper 识别出的词级时间戳，将每个双语单元精确对齐到对应英文首尾单词的发音时间，
     并结合静音检测 chunks 消除 Whisper 将句前静音算入句首单词 start 的偏差。
@@ -923,26 +803,6 @@ def process_directory(folder: Path, by_newline: bool = False):
 
     en_sents = split_english_sentences(en_text)
     zh_sents = split_chinese_sentences(zh_text)
-
-    # 若目录中没有中文文本，自动调用本地 mlx-lm 进行 1 对 1 英译中，并保存中文 txt
-    if not zh_sents and en_sents:
-        translated_zh_list = try_translate_with_mlx_lm(en_sents, en_text)
-        if translated_zh_list and len(translated_zh_list) == len(en_sents):
-            zh_sents = []
-            para_Map = {}
-            for s, zh_str in zip(en_sents, translated_zh_list):
-                zh_sents.append({
-                    "text": zh_str,
-                    "line": s["line"],
-                    "para_id": s["para_id"],
-                    "para_end": s["para_end"],
-                })
-                para_Map.setdefault(s["para_id"], []).append(zh_str)
-            auto_zh_text = "\n\n".join("".join(sents) for _, sents in sorted(para_Map.items()))
-            auto_zh_path = folder / f"{mp3_path.stem}_zh.txt"
-            auto_zh_path.write_text(auto_zh_text, encoding="utf-8")
-            print(f"🇨🇳 已自动翻译并生成中文文本: {auto_zh_path}")
-
     units = align_paragraphs_by_newline(en_sents, zh_sents) if by_newline else align_bilingual(en_sents, zh_sents)
 
     chunks = detect_audio_chunks(mp3_path)
@@ -982,43 +842,9 @@ def process_directory(folder: Path, by_newline: bool = False):
 
 
 if __name__ == "__main__":
-    raw_argv = sys.argv[1:]
-    if "--download-model" in raw_argv:
-        dl_idx = raw_argv.index("--download-model")
-        custom_dir = (
-            os.path.expanduser(raw_argv[dl_idx + 1].strip("\"'“”‘’"))
-            if dl_idx + 1 < len(raw_argv) and not raw_argv[dl_idx + 1].startswith("--")
-            else str(Path(__file__).parent / "models" / "Qwen2.5-3B-Instruct-4bit")
-        )
-        from huggingface_hub import snapshot_download  # type: ignore
-
-        print(f"⬇️ 正在下载翻译模型 mlx-community/Qwen2.5-3B-Instruct-4bit 到:\n   {custom_dir}")
-        snapshot_download(
-            repo_id="mlx-community/Qwen2.5-3B-Instruct-4bit",
-            local_dir=custom_dir,
-            max_workers=2,
-        )
-        print(f"✅ 模型下载完成！保存路径: {custom_dir}")
-        sys.exit(0)
-
-    use_newline = "--by-newline" in raw_argv
-    clean_args = []
-    idx = 0
-    while idx < len(raw_argv):
-        arg = raw_argv[idx]
-        if arg == "--by-newline":
-            idx += 1
-        elif arg == "--model" and idx + 1 < len(raw_argv):
-            os.environ["MLX_TRANSLATE_MODEL"] = os.path.expanduser(raw_argv[idx + 1].strip("\"'“”‘’"))
-            idx += 2
-        elif arg == "--prompt" and idx + 1 < len(raw_argv):
-            os.environ["MLX_TRANSLATE_PROMPT"] = raw_argv[idx + 1].strip("\"'“”‘’")
-            idx += 2
-        else:
-            clean_args.append(arg)
-            idx += 1
-
-    raw_path = clean_args[0] if clean_args else str(Path(__file__).parent / "resources")
+    args = [a for a in sys.argv[1:] if a != "--by-newline"]
+    use_newline = "--by-newline" in sys.argv[1:]
+    raw_path = args[0] if args else str(Path(__file__).parent / "resources")
     # 去除两端可能多余的引号与转义
     raw_path = raw_path.strip("\"'“”‘’")
     target = Path(os.path.expanduser(raw_path)).resolve()
