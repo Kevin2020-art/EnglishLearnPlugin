@@ -36,6 +36,12 @@ def _patch_httpx_brotli():
 
 _patch_httpx_brotli()
 
+# ================== AI 翻译提示词配置（可直接在此修改您的翻译风格要求） ==================
+TRANSLATE_STYLE_PROMPT = (
+    "请尽量贴近英文原文进行直译，忠实还原原文的词汇含义、句式结构与语序，"
+    "方便英语精听学习者逐词逐句对照理解；不要过度意译、不要自由发挥或无故增删内容。"
+)
+
 
 def is_chinese_text(text: str) -> bool:
     zh_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
@@ -703,17 +709,18 @@ def try_translate_with_mlx_lm(en_sents: list, full_en_text: str):
             _MLX_LM_CACHE = load(model_repo)
         model, tokenizer = _MLX_LM_CACHE
 
+        custom_style = os.environ.get("MLX_TRANSLATE_PROMPT", TRANSLATE_STYLE_PROMPT).strip()
         print(f"🌐 正在使用 mlx-lm 结合全文语境自动翻译 {len(en_sents)} 句英文为中文 ...")
         numbered_lines = "\n".join(f"[{i + 1}] {s['text']}" for i, s in enumerate(en_sents))
         system_prompt = (
-            "你是一位专业的英语绘本与分级阅读（RAZ）双语翻译专家。"
-            "请结合全文语境，将用户给出的带编号英文句子逐句翻译为自然、准确、简洁的简体中文。\n"
-            "严格遵守以下规则：\n"
+            "你是一位专业的英语精听与分级阅读（RAZ）双语对照翻译专家。\n"
+            f"【核心翻译要求】\n{custom_style}\n\n"
+            "【格式硬性规则】\n"
             "1. 必须严格保留每一行的编号格式 `[序号] 中文译文`，一行对应一句，严禁合并或拆分句子。\n"
             "2. 每一句译文内部不要使用多个句号（可用逗号连接），确保一行只有一句完整的中文。\n"
             "3. 只输出带编号的中文译文，不要输出任何解释或多余内容。"
         )
-        user_prompt = f"【全文背景参考】\n{full_en_text}\n\n【请逐行翻译以下句子】\n{numbered_lines}"
+        user_prompt = f"【全文背景参考】\n{full_en_text}\n\n【请逐行贴近原文翻译以下句子】\n{numbered_lines}"
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -744,7 +751,7 @@ def try_translate_with_mlx_lm(en_sents: list, full_en_text: str):
                 single_msgs = [
                     {
                         "role": "system",
-                        "content": "请结合全文背景，将用户给出的这句英文翻译成一句通顺简洁的简体中文。只输出译文，不要任何解释。",
+                        "content": f"请结合全文背景，将用户给出的这句英文翻译成一句简体中文。要求：{custom_style} 只输出译文，不要任何解释。",
                     },
                     {
                         "role": "user",
@@ -1003,6 +1010,9 @@ if __name__ == "__main__":
             idx += 1
         elif arg == "--model" and idx + 1 < len(raw_argv):
             os.environ["MLX_TRANSLATE_MODEL"] = os.path.expanduser(raw_argv[idx + 1].strip("\"'“”‘’"))
+            idx += 2
+        elif arg == "--prompt" and idx + 1 < len(raw_argv):
+            os.environ["MLX_TRANSLATE_PROMPT"] = raw_argv[idx + 1].strip("\"'“”‘’")
             idx += 2
         else:
             clean_args.append(arg)
