@@ -1719,15 +1719,9 @@ audioPlayer.addEventListener("ended", () => {
     return;
   }
 
-  // 继续下一轮循环播放
+  // 继续下一轮循环播放：统一走 jumpToSentence(0, true) 重置到第一句并锁定跳转
   updateLoopUI();
-  currentIndex = 0;
-  seekLockIdx = 0;
-  const firstStart = subtitles.length > 0 && Number.isFinite(subtitles[0].start) ? subtitles[0].start : 0;
-  audioPlayer.currentTime = Math.max(0, firstStart - 0.50);
-  updateStageDisplay(true);
-  safePlay();
-  setPlayState("playing");
+  jumpToSentence(0, true);
 });
 
 // 监听原生音频播放与暂停事件，保持与 iOS 锁屏/控制中心及系统中断同频
@@ -1798,11 +1792,14 @@ function syncSentenceByTime(t) {
     t = audioPlayer.currentTime;
   }
 
-  // 如果刚进行了句子跳转，在句首垫音阶段（时间尚未超过本句发音起点 + 0.15s），锁定在目标句，避免误判定为上一句
+  // 如果底层音频正在异步跳转中（seeking），暂不根据旧时间轴覆盖当前高亮句
+  if (audioPlayer.seeking) return;
+
+  // 如果刚进行了句子跳转（或循环重播回第一句），在时间尚未真正进入目标句区间（< start + 0.15s，或仍残留在跳转前的旧位置 > end + 0.5s）时，保持锁定在目标句
   if (seekLockIdx !== null) {
     const targetSub = subtitles[seekLockIdx];
     if (targetSub) {
-      if (t < targetSub.start + 0.15) {
+      if (t < targetSub.start + 0.15 || t > targetSub.end + 0.5) {
         if (currentIndex !== seekLockIdx) {
           currentIndex = seekLockIdx;
           updateStageDisplay(true);
@@ -1814,12 +1811,17 @@ function syncSentenceByTime(t) {
   }
 
   let matchedIdx = currentIndex;
-  for (let i = 0; i < subtitles.length; i++) {
-    const s = subtitles[i].start;
-    const nextS = i + 1 < subtitles.length ? subtitles[i + 1].start : Infinity;
-    if (t >= s - 0.05 && t < nextS - 0.05) {
-      matchedIdx = i;
-      break;
+  if (t < subtitles[0].start - 0.05) {
+    // 音频片头（第一句开口前）固定对应第一句，防止循环重播时保留上一轮末尾的 currentIndex
+    matchedIdx = 0;
+  } else {
+    for (let i = 0; i < subtitles.length; i++) {
+      const s = subtitles[i].start;
+      const nextS = i + 1 < subtitles.length ? subtitles[i + 1].start : Infinity;
+      if (t >= s - 0.05 && t < nextS - 0.05) {
+        matchedIdx = i;
+        break;
+      }
     }
   }
 
