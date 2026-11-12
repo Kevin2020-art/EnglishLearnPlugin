@@ -21,6 +21,7 @@ let currentRawTimedItems = []; // Whisper .srt 或带时间戳 .txt 解析出的
 let splitMode = "sentence"; // "sentence" (按句，先锁回车段落) | "paragraph" (纯按回车符一段一句)
 let currentIndex = 0;
 let seekLockIdx = null; // 跳转句子时的前瞻锁定目标，防止 0.5s 垫音期间时间轴误匹配到上一句
+let pendingSeekTime = null; // 手机端首次加载音频尚未就绪或首次 play() 重置进度时的待执行跳转时间点
 let playState = "stopped"; // "stopped" | "playing" | "paused"
 let showEn = true;
 let showZh = true;
@@ -1145,6 +1146,7 @@ async function loadLesson(folderPath) {
     }
     currentAudioObjectUrl = URL.createObjectURL(mp3File);
     audioPlayer.src = currentAudioObjectUrl;
+    audioPlayer.load(); // 主动触发预加载元数据，避免手机端首次直接点击后段句子时因 readyState===0 忽略 currentTime 跳转
 
     // 先读取中英文 txt（备用或补充）
     let enText = "";
@@ -1395,6 +1397,31 @@ function recoverAudioSourceAndResume(resumePlay = false) {
   audioPlayer.load();
 }
 
+// 安全设置音频时间点（解决 iOS/手机端刚加载音频尚未完成解码或首次 play() 将进度重置回 0 导致点击后段句子从第一句开始播的问题）
+function seekAudioTo(targetTime) {
+  const validTarget = Math.max(0, Number(targetTime) || 0);
+  pendingSeekTime = validTarget;
+  try {
+    if (audioPlayer.readyState >= 1) {
+      audioPlayer.currentTime = validTarget;
+    }
+  } catch (_) {}
+}
+
+function applyPendingSeek() {
+  if (pendingSeekTime === null) return;
+  try {
+    if (audioPlayer.readyState >= 1) {
+      if (Math.abs(audioPlayer.currentTime - pendingSeekTime) > 0.35) {
+        audioPlayer.currentTime = pendingSeekTime;
+      }
+      if (Math.abs(audioPlayer.currentTime - pendingSeekTime) <= 0.35) {
+        pendingSeekTime = null;
+      }
+    }
+  } catch (_) {}
+}
+
 // 跳转到指定句子
 function jumpToSentence(idx, autoPlay = true) {
   if (subtitles.length === 0) return;
@@ -1405,7 +1432,9 @@ function jumpToSentence(idx, autoPlay = true) {
   const prevEnd = idx > 0 ? subtitles[idx - 1].end : 0;
   // 增加 0.50s 的播放前瞻保护，消除浏览器/手机音频硬件 Seek 淡入造成的吞音
   const safeStart = Math.max(prevEnd, targetStart - 0.50);
-  audioPlayer.currentTime = safeStart;
+  seekAudioTo(safeStart);
+  progressBar.value = safeStart;
+  currentTimeLabel.textContent = formatShortTime(safeStart);
   updateStageDisplay(true);
 
   if (autoPlay) {
@@ -1420,7 +1449,7 @@ function startOrResumePlayback() {
   if (playState === "stopped") {
     const s0 = subtitles[currentIndex] ? subtitles[currentIndex].start : 0;
     const prevEnd = currentIndex > 0 ? subtitles[currentIndex - 1].end : 0;
-    audioPlayer.currentTime = Math.max(prevEnd, s0 - 0.50);
+    seekAudioTo(Math.max(prevEnd, s0 - 0.50));
     seekLockIdx = currentIndex;
   }
   safePlay();
@@ -1446,6 +1475,7 @@ function togglePlayPause() {
 function stopPlayback() {
   audioPlayer.pause();
   seekLockIdx = null;
+  pendingSeekTime = null;
   currentIndex = 0;
   completedPlayCount = 0;
   updateLoopUI();
@@ -1653,11 +1683,21 @@ if (loopLimitSelect) {
 audioPlayer.addEventListener("loadedmetadata", () => {
   durationLabel.textContent = formatShortTime(audioPlayer.duration);
   progressBar.max = audioPlayer.duration || 100;
+  applyPendingSeek();
+});
+
+audioPlayer.addEventListener("canplay", () => {
+  applyPendingSeek();
+});
+
+audioPlayer.addEventListener("playing", () => {
+  applyPendingSeek();
 });
 
 progressBar.addEventListener("input", () => {
   const t = parseFloat(progressBar.value);
   seekLockIdx = null; // 用户手动拖动进度条，解除跳转锁定
+  pendingSeekTime = null;
   audioPlayer.currentTime = t;
   currentTimeLabel.textContent = formatShortTime(t);
   syncSentenceByTime(t);
@@ -1751,6 +1791,12 @@ window.addEventListener("focus", handleVisibilityOrFocusChange);
 
 function syncSentenceByTime(t) {
   if (subtitles.length === 0) return;
+
+  if (pendingSeekTime !== null) {
+    applyPendingSeek();
+    if (pendingSeekTime !== null) return;
+    t = audioPlayer.currentTime;
+  }
 
   // 如果刚进行了句子跳转，在句首垫音阶段（时间尚未超过本句发音起点 + 0.15s），锁定在目标句，避免误判定为上一句
   if (seekLockIdx !== null) {
