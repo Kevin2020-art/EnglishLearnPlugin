@@ -29,7 +29,11 @@ let isLooping = false; // 是否开启循环播放（默认否）
 let loopLimit = 0; // 定时/定次停止：0 表示不限次数，2~10 表示播放 N 次后自动停止
 let completedPlayCount = 0; // 当前已完成的整篇播放次数
 let currentAudioObjectUrl = null;
-let currentAudioFile = null;
+let currentAudioBlob = null; // 纯内存音频 Blob（脱离 iOS 临时文件句柄生命周期，防止切后台后文件权限被系统回收导致崩溃）
+let isAudioSuspendedInBg = false; // 后台挂起期间是否已主动卸载 <audio> 硬件解码器
+let suspendedPlaybackTime = 0; // 后台卸载前记录的播放进度
+let bgSuspendTimer = null;
+let lastRecoverTimestamp = 0; // 防止 error 事件触发无限重连死循环的冷却时间戳
 let rafId = null;
 
 // DOM 引用
@@ -81,12 +85,15 @@ async function saveLastDirHandle(dirHandle) {
     const db = await openHandleDB();
     const tx = db.transaction(STORE_NAME, "readwrite");
     tx.objectStore(STORE_NAME).put(dirHandle, "lastDir");
+    tx.oncomplete = () => { try { db.close(); } catch (_) {} };
+    tx.onerror = () => { try { db.close(); } catch (_) {} };
   } catch (e) {
     console.warn("无法缓存目录句柄:", e);
   }
 }
 
 async function getLastDirHandle() {
+  if (typeof window.showDirectoryPicker !== "function") return null;
   try {
     const db = await openHandleDB();
     return await new Promise((resolve) => {
@@ -94,6 +101,8 @@ async function getLastDirHandle() {
       const req = tx.objectStore(STORE_NAME).get("lastDir");
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => resolve(null);
+      tx.oncomplete = () => { try { db.close(); } catch (_) {} };
+      tx.onerror = () => { try { db.close(); } catch (_) {} };
     });
   } catch {
     return null;
@@ -1140,11 +1149,18 @@ async function loadLesson(folderPath) {
     statusBadge.textContent = `正在加载 ${group.name}...`;
 
     const mp3File = group.mp3Files[0];
-    currentAudioFile = mp3File;
+    // 关键修复：将选中的音频一次性读入纯内存 Blob，彻底脱离 iOS 文件选择器（iCloud/Files）临时文件句柄在后台挂起时被系统回收导致的 WebKit 崩溃
+    const mp3Buffer = await mp3File.arrayBuffer();
+    currentAudioBlob = new Blob([mp3Buffer], { type: mp3File.type || "audio/mpeg" });
+    currentAudioBlob.name = mp3File.name || "lesson.mp3";
+    group.mp3Files[0] = currentAudioBlob;
+    isAudioSuspendedInBg = false;
+    suspendedPlaybackTime = 0;
+
     if (currentAudioObjectUrl) {
-      URL.revokeObjectURL(currentAudioObjectUrl);
+      try { URL.revokeObjectURL(currentAudioObjectUrl); } catch (_) {}
     }
-    currentAudioObjectUrl = URL.createObjectURL(mp3File);
+    currentAudioObjectUrl = URL.createObjectURL(currentAudioBlob);
     audioPlayer.src = currentAudioObjectUrl;
     audioPlayer.load(); // 主动触发预加载元数据，避免手机端首次直接点击后段句子时因 readyState===0 忽略 currentTime 跳转
 
@@ -1215,7 +1231,7 @@ async function loadLesson(folderPath) {
     // 4. 如果目录里只有 mp3 + 纯文本 txt，自动分析音频波形生成时间戳
     if (loadedSubtitles.length === 0 && units.length > 0) {
       statusBadge.textContent = "⏳ 正在根据音频波形与回车段落生成时间戳...";
-      loadedSubtitles = await autoDetectTimestampsFromAudio(mp3File, units);
+      loadedSubtitles = await autoDetectTimestampsFromAudio(currentAudioBlob, units);
       const modeLabel = splitMode === "paragraph" ? "按回车整段" : "按句(锁回车)";
       sourceDesc = `已从 TXT 自动对齐时间戳 [${modeLabel}] (${loadedSubtitles.length} 段/句)`;
     }
@@ -1356,13 +1372,50 @@ function setPlayState(newState) {
   }
 }
 
+// 后台静默时主动释放 <audio> 硬件解码器句柄，防止 iOS WebKit / GPUProcess 在后台挂起期间因持有空闲媒体管道而崩溃
+function suspendAudioForBackground() {
+  if (!currentAudioBlob || isAudioSuspendedInBg || !audioPlayer.paused) return;
+  suspendedPlaybackTime = Number.isFinite(audioPlayer.currentTime) && audioPlayer.currentTime > 0
+    ? audioPlayer.currentTime
+    : (subtitles[currentIndex] ? subtitles[currentIndex].start : 0);
+  isAudioSuspendedInBg = true;
+  try {
+    audioPlayer.removeAttribute("src");
+    audioPlayer.load();
+  } catch (_) {}
+  if (currentAudioObjectUrl) {
+    try { URL.revokeObjectURL(currentAudioObjectUrl); } catch (_) {}
+    currentAudioObjectUrl = null;
+  }
+}
+
+// 回到前台或准备播放时，从纯内存 Blob 重新挂载音频源并恢复进度
+function ensureAudioSourceMounted() {
+  if (!currentAudioBlob) return false;
+  if (!isAudioSuspendedInBg && audioPlayer.getAttribute("src") && !audioPlayer.error) {
+    return true;
+  }
+  isAudioSuspendedInBg = false;
+  if (currentAudioObjectUrl) {
+    try { URL.revokeObjectURL(currentAudioObjectUrl); } catch (_) {}
+  }
+  currentAudioObjectUrl = URL.createObjectURL(currentAudioBlob);
+  audioPlayer.src = currentAudioObjectUrl;
+  audioPlayer.load();
+  if (pendingSeekTime === null && suspendedPlaybackTime > 0) {
+    seekAudioTo(suspendedPlaybackTime);
+  }
+  return true;
+}
+
 // 安全播放封装，拦截并处理 iOS / 现代浏览器由系统中断或权限拦截导致的 Promise Rejection
 function safePlay() {
+  ensureAudioSourceMounted();
   const p = audioPlayer.play();
   if (p !== undefined && typeof p.catch === "function") {
     p.catch((err) => {
       console.warn("音频播放未成功:", err);
-      if (audioPlayer.error && currentAudioFile) {
+      if (audioPlayer.error && currentAudioBlob) {
         recoverAudioSourceAndResume(false);
       } else {
         setPlayState("paused");
@@ -1371,30 +1424,27 @@ function safePlay() {
   }
 }
 
-// 后台返回或系统内存回收导致音频源断开时的自动重连恢复机制
+// 后台返回或系统内存回收导致音频源断开时的自动重连恢复机制（带防抖冷却，杜绝无限循环触发 error）
 function recoverAudioSourceAndResume(resumePlay = false) {
-  if (!currentAudioFile) return;
+  if (!currentAudioBlob || isAudioSuspendedInBg) return;
+  const now = Date.now();
+  if (now - lastRecoverTimestamp < 3000) return;
+  lastRecoverTimestamp = now;
+
   const savedTime = Number.isFinite(audioPlayer.currentTime) && audioPlayer.currentTime > 0
     ? audioPlayer.currentTime
-    : (subtitles[currentIndex] ? subtitles[currentIndex].start : 0);
+    : (suspendedPlaybackTime > 0 ? suspendedPlaybackTime : (subtitles[currentIndex] ? subtitles[currentIndex].start : 0));
 
   if (currentAudioObjectUrl) {
     try { URL.revokeObjectURL(currentAudioObjectUrl); } catch (_) {}
   }
-  currentAudioObjectUrl = URL.createObjectURL(currentAudioFile);
+  currentAudioObjectUrl = URL.createObjectURL(currentAudioBlob);
   audioPlayer.src = currentAudioObjectUrl;
-
-  const onCanPlay = () => {
-    audioPlayer.removeEventListener("canplay", onCanPlay);
-    try {
-      audioPlayer.currentTime = savedTime;
-    } catch (_) {}
-    if (resumePlay) {
-      safePlay();
-    }
-  };
-  audioPlayer.addEventListener("canplay", onCanPlay);
+  seekAudioTo(savedTime);
   audioPlayer.load();
+  if (resumePlay) {
+    safePlay();
+  }
 }
 
 // 安全设置音频时间点（解决 iOS/手机端刚加载音频尚未完成解码或首次 play() 将进度重置回 0 导致点击后段句子从第一句开始播的问题）
@@ -1476,11 +1526,14 @@ function stopPlayback() {
   audioPlayer.pause();
   seekLockIdx = null;
   pendingSeekTime = null;
+  suspendedPlaybackTime = 0;
   currentIndex = 0;
   completedPlayCount = 0;
   updateLoopUI();
   const firstSentenceStart = subtitles.length > 0 && Number.isFinite(subtitles[0].start) ? subtitles[0].start : 0;
-  audioPlayer.currentTime = firstSentenceStart;
+  if (!isAudioSuspendedInBg && audioPlayer.getAttribute("src")) {
+    try { audioPlayer.currentTime = firstSentenceStart; } catch (_) {}
+  }
   progressBar.value = firstSentenceStart;
   currentTimeLabel.textContent = formatShortTime(firstSentenceStart);
   setPlayState("stopped");
@@ -1733,31 +1786,55 @@ audioPlayer.addEventListener("play", () => {
 
 audioPlayer.addEventListener("pause", () => {
   // 自然播放结束触发 ended 前浏览器会先触发 pause，此处忽略 ended 时的 pause，交由 ended 统一处理循环或停止
-  if (audioPlayer.ended) return;
+  if (audioPlayer.ended || isAudioSuspendedInBg) return;
   if (playState === "playing") {
     setPlayState("paused");
+  }
+  // 如果在后台（如锁屏/控制中心）暂停了播放，延迟 2 秒后主动释放空闲音频解码器，防止长时间挂起后崩溃
+  if (document.hidden) {
+    if (bgSuspendTimer) clearTimeout(bgSuspendTimer);
+    bgSuspendTimer = setTimeout(() => {
+      if (document.hidden && audioPlayer.paused) {
+        suspendAudioForBackground();
+      }
+    }, 2000);
   }
 });
 
 audioPlayer.addEventListener("error", () => {
+  // 主动卸载 src 期间触发的空源 error 直接忽略，防止死循环
+  if (isAudioSuspendedInBg || !audioPlayer.getAttribute("src")) return;
   console.warn("audioPlayer 异常:", audioPlayer.error);
-  if (currentAudioFile) {
+  if (currentAudioBlob) {
     recoverAudioSourceAndResume(false);
   }
 });
 
 // 前后台切换与页面唤醒自愈机制（解决手机端切出过久后音频资源被 WebKit 释放导致的崩溃或卡死）
 function handleVisibilityOrFocusChange() {
+  if (bgSuspendTimer) {
+    clearTimeout(bgSuspendTimer);
+    bgSuspendTimer = null;
+  }
+
   if (document.hidden) {
-    // 切换至后台时，停止高频 requestAnimationFrame 动画循环，降低 CPU/GPU 负载，防止被 iOS Jetsam 杀进程
+    // 1. 切换至后台时，停止高频 requestAnimationFrame 动画循环，降低 CPU/GPU 负载
     stopSyncLoop();
+    // 2. 如果当前并未在后台播放音频（处于暂停或停止状态），主动卸载 <audio> 解码管道，避免 iOS 挂起进程时因持有硬件解码器而崩溃
+    if (audioPlayer.paused) {
+      suspendAudioForBackground();
+    }
   } else {
     // 回到前台时：
-    // 1. 若音频源在后台失效报错，自动恢复 Blob 连接
-    if (audioPlayer.error && currentAudioFile) {
-      recoverAudioSourceAndResume(playState === "playing");
+    if (!currentAudioBlob) return;
+
+    // 1. 若在后台期间已主动卸载了音频管道，或音频源在后台报错，从内存 Blob 重新挂载恢复
+    if (isAudioSuspendedInBg || audioPlayer.error || !audioPlayer.getAttribute("src")) {
+      ensureAudioSourceMounted();
+      setPlayState("paused");
       return;
     }
+
     // 2. 校准界面状态与底层音频状态
     if (audioPlayer.paused) {
       if (playState === "playing") {
@@ -1780,8 +1857,12 @@ function handleVisibilityOrFocusChange() {
 }
 
 document.addEventListener("visibilitychange", handleVisibilityOrFocusChange);
-window.addEventListener("pageshow", handleVisibilityOrFocusChange);
-window.addEventListener("focus", handleVisibilityOrFocusChange);
+window.addEventListener("pageshow", (e) => {
+  // 仅在 BFCache 恢复或页面可见时触发，避免与 visibilitychange 重复并发冲撞
+  if (e.persisted || !document.hidden) {
+    handleVisibilityOrFocusChange();
+  }
+});
 
 function syncSentenceByTime(t) {
   if (subtitles.length === 0) return;
